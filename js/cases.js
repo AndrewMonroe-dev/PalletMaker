@@ -28,6 +28,45 @@ const Cases = (() => {
     ['cRows', 'cCols', 'cLayers', 'cSwatch'].forEach(id => {
       document.getElementById(id).addEventListener('input', updateComputedFields);
     });
+    document.getElementById('btnAddCaseSwatch').addEventListener('click', handleAddCaseSwatch);
+  }
+
+  function handleAddCaseSwatch() {
+    const itemTypeId = document.getElementById('cItemType').value;
+    if (!itemTypeId) {
+      alert('Select an item type first.');
+      return;
+    }
+    const nameInput = document.getElementById('cNewSwatchName');
+    const colorInput = document.getElementById('cNewSwatchColor');
+    const fileInput = document.getElementById('cNewSwatchImage');
+
+    const name = nameInput.value.trim();
+    if (!name) {
+      alert('Give the new color a name first.');
+      return;
+    }
+
+    const finalize = (imageDataUrl) => {
+      const swatch = ItemTypes.addSwatchToItemType(itemTypeId, {
+        name,
+        color: colorInput.value,
+        image: imageDataUrl || null
+      });
+      populateSwatchOptions(swatch.id);
+      updateComputedFields();
+      nameInput.value = '';
+      fileInput.value = '';
+    };
+
+    const file = fileInput.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (e) => finalize(e.target.result);
+      reader.readAsDataURL(file);
+    } else {
+      finalize(null);
+    }
   }
 
   function renderList() {

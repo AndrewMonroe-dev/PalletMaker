@@ -261,5 +261,17 @@ const ItemTypes = (() => {
     return state.itemTypes;
   }
 
-  return { init, getItemType, getAll };
+  // Lets other tabs (e.g. Cases) add a new palette color to an item type without navigating
+  // away to the Item Types tab first.
+  function addSwatchToItemType(itemTypeId, { name, color, image }) {
+    const item = getItemType(itemTypeId);
+    if (!item) return null;
+    const swatch = { id: uid('swatch'), name, color, image: image || null };
+    item.palette.push(swatch);
+    saveState(state);
+    renderList();
+    return swatch;
+  }
+
+  return { init, getItemType, getAll, addSwatchToItemType };
 })();

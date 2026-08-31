@@ -121,6 +121,7 @@ main { padding: 20px; }
 
 .item-type-form { display: flex; flex-direction: column; gap: 16px; max-width: 560px; }
 .item-type-form.hidden, #itemTypeDetailEmpty.hidden { display: none; }
+#caseDetailEmpty.hidden, #gridNoProject.hidden { display: none; }
 
 .item-type-form label {
   display: flex;
@@ -341,7 +342,7 @@ select {
 .grid-stack {
   position: absolute;
   border: 1px solid rgba(255,255,255,0.4);
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.6);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6);
   border-radius: 2px;
   display: flex;
   align-items: flex-end;
@@ -421,6 +422,7 @@ select {
 .tally-table tfoot td { font-weight: 600; border-bottom: none; border-top: 1px solid var(--border); }
 
 .viewer3d-workspace.hidden { display: none; }
+#viewer3dNoProject.hidden { display: none; }
 
 .viewer3d-layout {
   display: grid;

@@ -120,6 +120,19 @@
             <select id="cSwatch" required></select>
           </label>
 
+          <fieldset class="palette-fieldset">
+            <legend>Add a new color for this item type</legend>
+            <div class="add-swatch-row">
+              <input type="text" id="cNewSwatchName" placeholder="Swatch name (e.g. Red)">
+              <input type="color" id="cNewSwatchColor" value="#8b1e2b">
+              <label class="file-btn">
+                Upload image
+                <input type="file" id="cNewSwatchImage" accept="image/*" hidden>
+              </label>
+              <button type="button" id="btnAddCaseSwatch" class="btn-secondary">Add color</button>
+            </div>
+          </fieldset>
+
           <fieldset class="dims-fieldset">
             <legend>Arrangement (rows &times; columns &times; layers)</legend>
             <label>Rows (vertical) <input type="number" id="cRows" min="1" step="1" required></label>
