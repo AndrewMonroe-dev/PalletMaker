@@ -18,10 +18,15 @@ const Grid = (() => {
   let dragOp = null; // in-progress group move/rotate drag state
   let creatingNew = false; // true while the "create/import a project" form is forced open
 
+  let undoStack = []; // per-active-project, in-memory only (not persisted, doesn't survive reload)
+  let redoStack = [];
+  const UNDO_LIMIT = 50;
+
   function init(appState) {
     state = appState;
     bindStaticListeners();
     loadActiveProject();
+    clearHistory();
     render();
   }
 
@@ -40,8 +45,61 @@ const Grid = (() => {
     document.getElementById('btnDeleteProject').addEventListener('click', handleDeleteProject);
     document.getElementById('btnExportProject').addEventListener('click', handleExportProject);
     document.getElementById('btnImportProject').addEventListener('change', handleImportProject);
+    document.getElementById('btnUndo').addEventListener('click', undo);
+    document.getElementById('btnRedo').addEventListener('click', redo);
     window.addEventListener('mousemove', handlePointerMove);
     window.addEventListener('mouseup', handlePointerUp);
+    window.addEventListener('keydown', (e) => {
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+    });
+  }
+
+  // ---- Undo/redo (per active project, in-memory only) ----
+
+  function snapshotProject() {
+    return project ? JSON.parse(JSON.stringify(project)) : null;
+  }
+
+  function pushUndo(snap) {
+    if (!snap) return;
+    undoStack.push(snap);
+    if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    redoStack = [];
+  }
+
+  function clearHistory() {
+    undoStack = [];
+    redoStack = [];
+  }
+
+  function applyProjectSnapshot(snap) {
+    const idx = state.projects.findIndex(p => p.id === snap.id);
+    if (idx === -1) return;
+    state.projects[idx] = snap;
+    project = snap;
+    selectedStackId = null;
+    selectedGroupId = null;
+    multiSelectIds.clear();
+    saveState(state);
+    render();
+  }
+
+  function undo() {
+    if (!project || undoStack.length === 0) return;
+    const prev = undoStack.pop();
+    redoStack.push(snapshotProject());
+    applyProjectSnapshot(prev);
+  }
+
+  function redo() {
+    if (!project || redoStack.length === 0) return;
+    const next = redoStack.pop();
+    undoStack.push(snapshotProject());
+    applyProjectSnapshot(next);
   }
 
   function loadActiveProject() {
@@ -79,6 +137,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     multiSelectIds.clear();
+    clearHistory();
     saveState(state);
     render();
   }
@@ -90,6 +149,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     multiSelectIds.clear();
+    clearHistory();
     saveState(state);
     render();
   }
@@ -103,6 +163,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     multiSelectIds.clear();
+    clearHistory();
     saveState(state);
     render();
   }
@@ -140,6 +201,7 @@ const Grid = (() => {
         selectedStackId = null;
         selectedGroupId = null;
         multiSelectIds.clear();
+        clearHistory();
         saveState(state);
         render();
       } catch (err) {
@@ -165,6 +227,13 @@ const Grid = (() => {
     document.getElementById('btnExportProject').classList.toggle('hidden', !project);
     document.getElementById('btnImportProjectLabel').classList.remove('hidden');
     document.getElementById('btnCancelProjectForm').classList.toggle('hidden', !project || !creatingNew);
+
+    const undoBtn = document.getElementById('btnUndo');
+    const redoBtn = document.getElementById('btnRedo');
+    undoBtn.classList.toggle('hidden', !project);
+    redoBtn.classList.toggle('hidden', !project);
+    undoBtn.disabled = undoStack.length === 0;
+    redoBtn.disabled = redoStack.length === 0;
   }
 
   function render() {
@@ -398,6 +467,7 @@ const Grid = (() => {
     );
 
     if (sameFootprintOverlap) {
+      pushUndo(snapshotProject());
       sameFootprintOverlap.items.push(newItem);
       saveState(state);
       render();
@@ -409,6 +479,7 @@ const Grid = (() => {
       return;
     }
 
+    pushUndo(snapshotProject());
     project.stacks.push({
       id: uid('stack'),
       x, y,
@@ -521,6 +592,7 @@ const Grid = (() => {
 
   function handleGroupSelected() {
     if (multiSelectIds.size < 2) return;
+    pushUndo(snapshotProject());
     const memberStacks = project.stacks.filter(s => multiSelectIds.has(s.id));
 
     const minX = Math.min(...memberStacks.map(s => s.x));
@@ -557,6 +629,7 @@ const Grid = (() => {
   function handleUngroup(groupId) {
     const group = project.groups.find(g => g.id === groupId);
     if (!group) return;
+    pushUndo(snapshotProject());
 
     getGroupMembers(group).forEach(({ stack, worldCenter }) => {
       // Flatten back to axis-aligned at the member's current visual center; rotation is a
@@ -574,6 +647,7 @@ const Grid = (() => {
 
   function handleDeleteGroup(groupId) {
     if (!confirm('Delete this entire group and everything in it?')) return;
+    pushUndo(snapshotProject());
     const memberIds = (project.groups.find(g => g.id === groupId) || {}).memberIds || [];
     project.stacks = project.stacks.filter(s => !memberIds.includes(s.id));
     project.groups = project.groups.filter(g => g.id !== groupId);
@@ -586,7 +660,9 @@ const Grid = (() => {
     const group = project.groups.find(g => g.id === groupId);
     if (!group) return;
     const normalized = ((angle % 360) + 360) % 360;
-    tryApplyGroupTransform(group, group.centerX, group.centerY, normalized);
+    const before = snapshotProject();
+    const ok = tryApplyGroupTransform(group, group.centerX, group.centerY, normalized);
+    if (ok) pushUndo(before);
   }
 
   function tryApplyGroupTransform(group, centerX, centerY, angle) {
@@ -677,7 +753,8 @@ const Grid = (() => {
       startMouseX: e.clientX,
       startMouseY: e.clientY,
       startCenterX: group.centerX,
-      startCenterY: group.centerY
+      startCenterY: group.centerY,
+      beforeSnapshot: snapshotProject()
     };
   }
 
@@ -691,7 +768,8 @@ const Grid = (() => {
       groupId: group.id,
       canvasLeft: rect.left,
       canvasTop: rect.top,
-      startAngle: group.angle
+      startAngle: group.angle,
+      beforeSnapshot: snapshotProject()
     };
   }
 
@@ -718,11 +796,28 @@ const Grid = (() => {
   function handlePointerUp() {
     if (!dragOp || !project) { dragOp = null; return; }
     const group = project.groups.find(g => g.id === dragOp.groupId);
+    const op = dragOp;
     dragOp = null;
     if (!group) return;
 
+    // A plain click (mousedown+mouseup with no real drag) shouldn't count as a move/rotate --
+    // no state actually changed, so committing here would pollute undo history and (since this
+    // fires before the browser's own 'click' event) can race with the click listener that
+    // handles selection.
+    const moved = op.type === 'move' &&
+      (Math.abs(group.centerX - op.startCenterX) > 0.05 || Math.abs(group.centerY - op.startCenterY) > 0.05);
+    const rotated = op.type === 'rotate' && Math.abs(group.angle - op.startAngle) > 0.5;
+    if (!moved && !rotated) {
+      group.centerX = op.startCenterX !== undefined ? op.startCenterX : group.centerX;
+      group.centerY = op.startCenterY !== undefined ? op.startCenterY : group.centerY;
+      group.angle = op.startAngle !== undefined ? op.startAngle : group.angle;
+      return;
+    }
+
     const ok = tryApplyGroupTransform(group, group.centerX, group.centerY, group.angle);
-    if (!ok) {
+    if (ok) {
+      pushUndo(op.beforeSnapshot);
+    } else {
       alert('That move/rotation would overlap something else or leave the floor. Reverted.');
     }
   }
@@ -876,6 +971,7 @@ const Grid = (() => {
     removeTopBtn.className = 'btn-secondary';
     removeTopBtn.textContent = 'Remove top item';
     removeTopBtn.addEventListener('click', () => {
+      pushUndo(snapshotProject());
       stack.items.pop();
       if (stack.items.length === 0) {
         project.stacks = project.stacks.filter(s => s.id !== stack.id);
@@ -891,6 +987,7 @@ const Grid = (() => {
     deleteStackBtn.textContent = 'Delete entire stack';
     deleteStackBtn.addEventListener('click', () => {
       if (!confirm('Remove this entire stack from the floor?')) return;
+      pushUndo(snapshotProject());
       project.stacks = project.stacks.filter(s => s.id !== stack.id);
       selectedStackId = null;
       saveState(state);
