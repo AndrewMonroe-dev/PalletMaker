@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PalletMaker</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="app-header">
+  <h1>PalletMaker</h1>
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="itemTypes">Item Types</button>
+    <button class="tab-btn" data-tab="cases">Cases</button>
+    <button class="tab-btn" data-tab="grid">Grid</button>
+    <button class="tab-btn" data-tab="viewer3d">3D Viewer</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-itemTypes" class="tab-panel active">
+    <div class="panel-layout">
+      <div class="panel-list">
+        <div class="panel-list-header">
+          <h2>Item Types</h2>
+          <button id="btnAddItemType" class="btn-icon" title="Add item type">+</button>
+        </div>
+        <div id="itemTypeList" class="item-type-list">
+          <p class="empty-state">No item types yet. Click + to add one.</p>
+        </div>
+      </div>
+
+      <div class="panel-detail">
+        <div id="itemTypeDetailEmpty" class="empty-state-large">
+          <p>Select an item type to view or edit it, or click + to create a new one.</p>
+        </div>
+
+        <form id="itemTypeForm" class="item-type-form hidden">
+          <h2 id="formTitle">New Item Type</h2>
+
+          <label>
+            Name
+            <input type="text" id="fName" required placeholder="e.g. Bota Box Red 3L">
+          </label>
+
+          <fieldset class="dims-fieldset">
+            <legend>Unit Dimensions (inches)</legend>
+            <label>Width <input type="number" id="fWidth" min="0.01" step="0.01" required></label>
+            <label>Height <input type="number" id="fHeight" min="0.01" step="0.01" required></label>
+            <label>Depth <input type="number" id="fDepth" min="0.01" step="0.01" required></label>
+          </fieldset>
+
+          <fieldset class="pricing-fieldset">
+            <legend>Pricing</legend>
+            <label>Units per case <input type="number" id="fUnitsPerCase" min="1" step="1" required></label>
+            <label>Cost per case ($) <input type="number" id="fCostPerCase" min="0" step="0.01" required></label>
+            <label>Margin % <input type="number" id="fMargin" min="0" max="99.99" step="0.01" required></label>
+            <div class="computed-row">
+              <span>Cost per unit: <strong id="calcCostPerUnit">$0.00</strong></span>
+              <span>Retail per unit: <strong id="calcRetailPerUnit">$0.00</strong></span>
+            </div>
+          </fieldset>
+
+          <fieldset class="palette-fieldset">
+            <legend>Palette</legend>
+            <div id="paletteSwatchList" class="palette-swatch-list"></div>
+            <div class="add-swatch-row">
+              <input type="text" id="fNewSwatchName" placeholder="Swatch name (e.g. Red)">
+              <input type="color" id="fNewSwatchColor" value="#8b1e2b">
+              <label class="file-btn">
+                Upload image
+                <input type="file" id="fNewSwatchImage" accept="image/*" hidden>
+              </label>
+              <button type="button" id="btnAddSwatch" class="btn-secondary">Add swatch</button>
+            </div>
+          </fieldset>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary">Save Item Type</button>
+            <button type="button" id="btnDeleteItemType" class="btn-danger hidden">Delete</button>
+            <button type="button" id="btnCancelForm" class="btn-secondary">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-cases" class="tab-panel">
+    <div class="panel-layout">
+      <div class="panel-list">
+        <div class="panel-list-header">
+          <h2>Cases</h2>
+          <button id="btnAddCase" class="btn-icon" title="Add case">+</button>
+        </div>
+        <div id="caseList" class="item-type-list">
+          <p class="empty-state">No cases yet. Click + to add one.</p>
+        </div>
+      </div>
+
+      <div class="panel-detail">
+        <div id="caseDetailEmpty" class="empty-state-large">
+          <p id="caseDetailEmptyMsg">Select a case to view or edit it, or click + to create a new one.</p>
+        </div>
+
+        <form id="caseForm" class="item-type-form hidden">
+          <h2 id="caseFormTitle">New Case</h2>
+
+          <label>
+            Name
+            <input type="text" id="cName" required placeholder="e.g. Bota Box Red Case">
+          </label>
+
+          <label>
+            Item Type
+            <select id="cItemType" required></select>
+          </label>
+
+          <label>
+            Swatch
+            <select id="cSwatch" required></select>
+          </label>
+
+          <fieldset class="dims-fieldset">
+            <legend>Arrangement (rows &times; columns &times; layers)</legend>
+            <label>Rows (vertical) <input type="number" id="cRows" min="1" step="1" required></label>
+            <label>Columns (horizontal) <input type="number" id="cCols" min="1" step="1" required></label>
+            <label>Layers (front-to-back) <input type="number" id="cLayers" min="1" step="1" required></label>
+          </fieldset>
+
+          <div class="computed-row" id="caseUnitCountRow">
+            <span>Total units in this arrangement: <strong id="calcUnitCount">0</strong></span>
+            <span>Item type's units per case: <strong id="calcExpectedUnitCount">0</strong></span>
+          </div>
+          <p id="caseUnitCountWarning" class="warning-text hidden">
+            Arrangement must total exactly the item type's units per case before saving.
+          </p>
+
+          <div class="computed-row">
+            <span>Case size: <strong id="calcCaseDims">--</strong></span>
+            <span>Case cost: <strong id="calcCaseCost">$0.00</strong></span>
+            <span>Case revenue: <strong id="calcCaseRevenue">$0.00</strong></span>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn-primary">Save Case</button>
+            <button type="button" id="btnDeleteCase" class="btn-danger hidden">Delete</button>
+            <button type="button" id="btnCancelCaseForm" class="btn-secondary">Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </section>
+  <section id="tab-grid" class="tab-panel">
+    <div class="project-toolbar">
+      <label class="project-toolbar-label">
+        Project
+        <select id="projectSwitcher"><option value="">-- No project --</option></select>
+      </label>
+      <button id="btnNewProject" class="btn-secondary">New Project</button>
+      <button id="btnDeleteProject" class="btn-danger hidden">Delete Project</button>
+      <button id="btnExportProject" class="btn-secondary hidden">Export JSON</button>
+      <label class="file-btn hidden" id="btnImportProjectLabel">
+        Import JSON
+        <input type="file" id="btnImportProject" accept="application/json" hidden>
+      </label>
+    </div>
+
+    <div id="gridNoProject" class="panel-detail" style="max-width:480px;">
+      <h2>Create a Project</h2>
+      <form id="projectForm" class="item-type-form">
+        <label>
+          Project name
+          <input type="text" id="pName" required placeholder="e.g. Retailer X End Cap">
+        </label>
+        <fieldset class="dims-fieldset">
+          <legend>Floor footprint (inches)</legend>
+          <label>Width <input type="number" id="pWidth" min="1" step="0.5" required></label>
+          <label>Depth <input type="number" id="pDepth" min="1" step="0.5" required></label>
+        </fieldset>
+        <div class="form-actions">
+          <button type="submit" class="btn-primary">Create Project</button>
+          <button type="button" id="btnCancelProjectForm" class="btn-secondary hidden">Cancel</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="gridWorkspace" class="grid-workspace hidden">
+      <div class="grid-workspace-header">
+        <h2 id="gridProjectName">Project</h2>
+        <span id="gridProjectDims" class="row-dims"></span>
+      </div>
+      <div class="grid-layout">
+        <div class="panel-list grid-palette">
+          <h3>Drag onto the floor</h3>
+          <div id="gridPaletteList"></div>
+        </div>
+
+        <div class="grid-canvas-wrap">
+          <div id="gridCanvas" class="grid-canvas"></div>
+          <p class="empty-state" id="gridHint">Drag a case or unit from the left onto the floor below.</p>
+        </div>
+
+        <div class="panel-list grid-selection">
+          <h3>Selected Stack</h3>
+          <div id="gridSelectionPanel">
+            <p class="empty-state">Click a stack on the floor to manage it.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-list grid-tally">
+        <h3>Project Tally</h3>
+        <div id="gridTallyPanel"></div>
+      </div>
+    </div>
+  </section>
+  <section id="tab-viewer3d" class="tab-panel">
+    <div id="viewer3dNoProject" class="empty-state-large">
+      <p>Create or select a project on the Grid tab first.</p>
+    </div>
+
+    <div id="viewer3dWorkspace" class="viewer3d-workspace hidden">
+      <div class="viewer3d-layout">
+        <div class="viewer3d-canvas-wrap">
+          <div id="viewer3dCanvas"></div>
+          <p class="empty-state">Drag to orbit, scroll to zoom.</p>
+        </div>
+
+        <div class="panel-list viewer3d-side">
+          <h3>Image Panels</h3>
+          <label class="file-btn">
+            Add image panel
+            <input type="file" id="viewer3dAddImage" accept="image/*" hidden>
+          </label>
+          <div id="viewer3dPanelList" class="viewer3d-panel-list"></div>
+
+          <div class="form-actions" style="margin-top:14px;">
+            <button id="viewer3dExportBtn" class="btn-primary">Export Image</button>
+          </div>
+
+          <div id="viewer3dTallySummary" class="viewer3d-tally-summary"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/itemTypes.js"></script>
+<script src="js/cases.js"></script>
+<script src="js/grid.js"></script>
+<script src="js/viewer3d.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
