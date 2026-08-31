@@ -394,6 +394,11 @@ const Grid = (() => {
     badge.textContent = stack.items.length > 1 ? `x${stack.items.length}` : '1';
     el.appendChild(badge);
 
+    el.addEventListener('mousedown', (e) => {
+      if (e.shiftKey) return; // shift+click is for multi-select, not moving
+      startStackMove(e, stack);
+    });
+
     el.addEventListener('click', (e) => {
       if (e.shiftKey) {
         toggleMultiSelect(stack.id);
@@ -744,6 +749,69 @@ const Grid = (() => {
     return handle;
   }
 
+  function startStackMove(e, stack) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragOp = {
+      type: 'stack-move',
+      stackId: stack.id,
+      startMouseX: e.clientX,
+      startMouseY: e.clientY,
+      startX: stack.x,
+      startY: stack.y,
+      beforeSnapshot: snapshotProject()
+    };
+  }
+
+  function commitStackMove(stack, op) {
+    const x = snap(stack.x);
+    const y = snap(stack.y);
+
+    if (x < 0 || y < 0 || x + stack.footprintW > project.footprintWidth || y + stack.footprintD > project.footprintDepth) {
+      stack.x = op.startX;
+      stack.y = op.startY;
+      alert('That placement goes outside the floor footprint. Reverted.');
+      render();
+      return;
+    }
+
+    const droppedRect = { x, y, w: stack.footprintW, d: stack.footprintD };
+
+    const sameFootprintOverlap = project.stacks.find(s =>
+      s.id !== stack.id && !s.groupId &&
+      Math.abs(s.footprintW - stack.footprintW) < 0.001 &&
+      Math.abs(s.footprintD - stack.footprintD) < 0.001 &&
+      rectsOverlap(droppedRect, { x: s.x, y: s.y, w: s.footprintW, d: s.footprintD })
+    );
+
+    if (sameFootprintOverlap) {
+      // Dropping onto a same-footprint stack merges into it, same as a fresh drag-drop from
+      // the palette would -- lets you consolidate stacks by dragging one onto another.
+      sameFootprintOverlap.items.push(...stack.items);
+      project.stacks = project.stacks.filter(s => s.id !== stack.id);
+      if (selectedStackId === stack.id) selectedStackId = sameFootprintOverlap.id;
+      pushUndo(op.beforeSnapshot);
+      saveState(state);
+      render();
+      return;
+    }
+
+    const droppedCorners = aabbCorners(x, y, stack.footprintW, stack.footprintD);
+    if (collidesWithAnything(droppedCorners, { excludeStackId: stack.id, excludeGroupId: null })) {
+      stack.x = op.startX;
+      stack.y = op.startY;
+      alert('That overlaps an existing stack or group. Reverted.');
+      render();
+      return;
+    }
+
+    stack.x = x;
+    stack.y = y;
+    pushUndo(op.beforeSnapshot);
+    saveState(state);
+    render();
+  }
+
   function startGroupMove(e, group) {
     e.preventDefault();
     e.stopPropagation();
@@ -775,6 +843,18 @@ const Grid = (() => {
 
   function handlePointerMove(e) {
     if (!dragOp || !project) return;
+
+    if (dragOp.type === 'stack-move') {
+      const stack = project.stacks.find(s => s.id === dragOp.stackId);
+      if (!stack) { dragOp = null; return; }
+      const dxPx = e.clientX - dragOp.startMouseX;
+      const dyPx = e.clientY - dragOp.startMouseY;
+      stack.x = dragOp.startX + dxPx / scale;
+      stack.y = dragOp.startY + dyPx / scale;
+      renderCanvas();
+      return;
+    }
+
     const group = project.groups.find(g => g.id === dragOp.groupId);
     if (!group) { dragOp = null; return; }
 
@@ -795,6 +875,22 @@ const Grid = (() => {
 
   function handlePointerUp() {
     if (!dragOp || !project) { dragOp = null; return; }
+
+    if (dragOp.type === 'stack-move') {
+      const op = dragOp;
+      dragOp = null;
+      const stack = project.stacks.find(s => s.id === op.stackId);
+      if (!stack) return;
+      const moved = Math.abs(stack.x - op.startX) > 0.05 || Math.abs(stack.y - op.startY) > 0.05;
+      if (!moved) {
+        stack.x = op.startX;
+        stack.y = op.startY;
+        return;
+      }
+      commitStackMove(stack, op);
+      return;
+    }
+
     const group = project.groups.find(g => g.id === dragOp.groupId);
     const op = dragOp;
     dragOp = null;

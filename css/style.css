@@ -347,10 +347,11 @@ select {
   justify-content: flex-end;
   padding: 2px;
   box-sizing: border-box;
-  cursor: pointer;
+  cursor: grab;
   background-size: cover;
   background-position: center;
 }
+.grid-stack:active { cursor: grabbing; }
 .grid-stack.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 .grid-stack.drag-over-invalid { outline: 2px solid var(--danger); }
 
