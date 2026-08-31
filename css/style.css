@@ -340,7 +340,8 @@ select {
 
 .grid-stack {
   position: absolute;
-  border: 1px solid rgba(0,0,0,0.5);
+  border: 1px solid rgba(255,255,255,0.4);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.6);
   border-radius: 2px;
   display: flex;
   align-items: flex-end;

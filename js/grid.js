@@ -427,6 +427,11 @@ const Grid = (() => {
     const sw = resolveSwatch(topItem.itemTypeId, topItem.swatchId);
     if (sw) {
       el.style.background = sw.image ? `url(${sw.image}) center/cover` : sw.color;
+    } else {
+      // Item type or swatch was deleted after this was placed -- show a visible "missing"
+      // pattern instead of leaving the box invisible against the canvas.
+      el.style.background = 'repeating-linear-gradient(45deg, #7a2f2f, #7a2f2f 6px, #3a1414 6px, #3a1414 12px)';
+      el.title = 'This item\'s type or color was deleted -- remove it from the floor.';
     }
   }
 
