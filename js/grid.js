@@ -4,8 +4,7 @@
 
 const Grid = (() => {
   const SNAP_IN = 1;
-  const PX_PER_IN_MAX = 6;
-  const CANVAS_MAX_PX = 720;
+  const PX_PER_IN_MAX = 40; // ceiling so a small floor doesn't get absurdly huge cells
 
   let state = null;
   let project = null;
@@ -55,6 +54,13 @@ const Grid = (() => {
       if (!(e.ctrlKey || e.metaKey)) return;
       if (e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
       else if (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+    });
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (project && !creatingNew) renderCanvas();
+      }, 150);
     });
   }
 
@@ -340,9 +346,12 @@ const Grid = (() => {
   }
 
   function computeScale() {
+    const wrap = document.querySelector('.grid-canvas-wrap');
+    const availableWidth = Math.max(300, (wrap ? wrap.clientWidth : 800) - 32);
+    const availableHeight = Math.max(300, window.innerHeight * 0.7);
     const w = project.footprintWidth;
     const d = project.footprintDepth;
-    scale = Math.min(PX_PER_IN_MAX, CANVAS_MAX_PX / Math.max(w, d));
+    scale = Math.min(availableWidth / w, availableHeight / d, PX_PER_IN_MAX);
     return scale;
   }
 
@@ -700,15 +709,31 @@ const Grid = (() => {
 
   // ---- Group rendering ----
 
-  function buildGroupMemberEl(group, stack, worldCenter) {
-    const el = document.createElement('div');
-    el.className = 'grid-stack' + (group.id === selectedGroupId ? ' selected' : '');
+  function positionGroupMemberEl(el, stack, worldCenter, angle) {
     el.style.width = `${stack.footprintW * scale}px`;
     el.style.height = `${stack.footprintD * scale}px`;
     el.style.left = `${(worldCenter.x - stack.footprintW / 2) * scale}px`;
     el.style.top = `${(worldCenter.y - stack.footprintD / 2) * scale}px`;
-    el.style.transform = `rotate(${group.angle}deg)`;
+    el.style.transform = `rotate(${angle}deg)`;
     el.style.transformOrigin = 'center';
+  }
+
+  function groupBoundingBox(group, members) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    members.forEach(({ stack, worldCenter }) => {
+      groupMemberCorners(group, { stack, worldCenter }).forEach(c => {
+        minX = Math.min(minX, c.x); maxX = Math.max(maxX, c.x);
+        minY = Math.min(minY, c.y); maxY = Math.max(maxY, c.y);
+      });
+    });
+    return { minX, minY, maxX, maxY };
+  }
+
+  function buildGroupMemberEl(group, stack, worldCenter) {
+    const el = document.createElement('div');
+    el.className = 'grid-stack' + (group.id === selectedGroupId ? ' selected' : '');
+    el.dataset.stackId = stack.id;
+    positionGroupMemberEl(el, stack, worldCenter, group.angle);
 
     applySwatchBackground(el, stack.items[stack.items.length - 1]);
 
@@ -732,13 +757,7 @@ const Grid = (() => {
   function buildRotateHandleEl(group, members) {
     if (group.id !== selectedGroupId || members.length === 0) return null;
 
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    members.forEach(({ stack, worldCenter }) => {
-      groupMemberCorners(group, { stack, worldCenter }).forEach(c => {
-        minX = Math.min(minX, c.x); maxX = Math.max(maxX, c.x);
-        minY = Math.min(minY, c.y); maxY = Math.max(maxY, c.y);
-      });
-    });
+    const { minX, minY, maxX } = groupBoundingBox(group, members);
 
     const handle = document.createElement('div');
     handle.className = 'group-rotate-handle';
@@ -755,6 +774,7 @@ const Grid = (() => {
     dragOp = {
       type: 'stack-move',
       stackId: stack.id,
+      el: e.currentTarget,
       startMouseX: e.clientX,
       startMouseY: e.clientY,
       startX: stack.x,
@@ -822,7 +842,9 @@ const Grid = (() => {
       startMouseY: e.clientY,
       startCenterX: group.centerX,
       startCenterY: group.centerY,
-      beforeSnapshot: snapshotProject()
+      beforeSnapshot: snapshotProject(),
+      memberEls: collectGroupMemberEls(group),
+      handleEl: document.getElementById('gridCanvas').querySelector('.group-rotate-handle')
     };
   }
 
@@ -837,8 +859,33 @@ const Grid = (() => {
       canvasLeft: rect.left,
       canvasTop: rect.top,
       startAngle: group.angle,
-      beforeSnapshot: snapshotProject()
+      beforeSnapshot: snapshotProject(),
+      memberEls: collectGroupMemberEls(group),
+      handleEl: canvas.querySelector('.group-rotate-handle')
     };
+  }
+
+  function collectGroupMemberEls(group) {
+    const canvas = document.getElementById('gridCanvas');
+    const map = {};
+    group.memberIds.forEach(stackId => {
+      const el = canvas.querySelector(`.grid-stack[data-stack-id="${stackId}"]`);
+      if (el) map[stackId] = el;
+    });
+    return map;
+  }
+
+  function liveRepositionGroup(group) {
+    const members = getGroupMembers(group);
+    members.forEach(({ stack, worldCenter }) => {
+      const el = dragOp && dragOp.memberEls && dragOp.memberEls[stack.id];
+      if (el) positionGroupMemberEl(el, stack, worldCenter, group.angle);
+    });
+    if (dragOp && dragOp.handleEl) {
+      const { minX, minY, maxX } = groupBoundingBox(group, members);
+      dragOp.handleEl.style.left = `${((minX + maxX) / 2) * scale - 8}px`;
+      dragOp.handleEl.style.top = `${minY * scale - 28}px`;
+    }
   }
 
   function handlePointerMove(e) {
@@ -851,7 +898,12 @@ const Grid = (() => {
       const dyPx = e.clientY - dragOp.startMouseY;
       stack.x = dragOp.startX + dxPx / scale;
       stack.y = dragOp.startY + dyPx / scale;
-      renderCanvas();
+      // Move the live element directly instead of tearing down/rebuilding the whole canvas on
+      // every mousemove -- cheaper, and avoids replacing the element being dragged mid-drag.
+      if (dragOp.el) {
+        dragOp.el.style.left = `${stack.x * scale}px`;
+        dragOp.el.style.top = `${stack.y * scale}px`;
+      }
       return;
     }
 
@@ -863,13 +915,13 @@ const Grid = (() => {
       const dyPx = e.clientY - dragOp.startMouseY;
       group.centerX = dragOp.startCenterX + dxPx / scale;
       group.centerY = dragOp.startCenterY + dyPx / scale;
-      renderCanvas();
+      liveRepositionGroup(group);
     } else if (dragOp.type === 'rotate') {
       const cx = dragOp.canvasLeft + group.centerX * scale;
       const cy = dragOp.canvasTop + group.centerY * scale;
       const angleRad = Math.atan2(e.clientY - cy, e.clientX - cx);
       group.angle = ((angleRad * 180) / Math.PI + 360) % 360;
-      renderCanvas();
+      liveRepositionGroup(group);
     }
   }
 
