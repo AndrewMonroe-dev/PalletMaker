@@ -166,13 +166,38 @@ const Viewer3D = (() => {
       // Plain stretch to fill the entire face -- BoxGeometry's default UV mapping already
       // covers each face 0..1, so the image fills every pixel with no cropping, at the cost of
       // distorting its aspect ratio if the face's own proportions differ from the photo's.
-      const texture = new THREE.TextureLoader().load(sw.image);
+      const texture = new THREE.TextureLoader().load(sw.image, (tex) => {
+        const avgColor = computeAverageColor(tex.image);
+        if (avgColor) flatMat.color.set(avgColor);
+      });
       frontMat = new THREE.MeshStandardMaterial({ map: texture });
     }
     // BoxGeometry material order: +X, -X, +Y, -Y, +Z, -Z. Front (largest grid-Y) maps to +Z.
     const materials = [flatMat, flatMat, flatMat, flatMat, frontMat, flatMat];
     const geo = new THREE.BoxGeometry(width, height, depth);
     return new THREE.Mesh(geo, materials);
+  }
+
+  // Samples the average color of an uploaded photo (via an offscreen canvas) so the box's
+  // top/side/back faces read as "the color of the product" instead of a separately hand-picked
+  // swatch color that may not actually match the photo.
+  function computeAverageColor(img) {
+    try {
+      const size = 16;
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, size, size);
+      const data = ctx.getImageData(0, 0, size, size).data;
+      let r = 0, g = 0, b = 0, count = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
+      }
+      return `rgb(${Math.round(r / count)}, ${Math.round(g / count)}, ${Math.round(b / count)})`;
+    } catch (e) {
+      return null;
+    }
   }
 
   function addImagePanelsToScene() {

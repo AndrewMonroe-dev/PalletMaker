@@ -347,17 +347,18 @@ select {
   display: flex;
   align-items: flex-end;
   justify-content: flex-end;
-  padding: 2px;
   box-sizing: border-box;
   cursor: grab;
   background-size: cover;
   background-position: center;
+  background-origin: border-box;
 }
 .grid-stack:active { cursor: grabbing; }
 .grid-stack.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 .grid-stack.drag-over-invalid { outline: 2px solid var(--danger); }
 
 .grid-stack .stack-badge {
+  margin: 2px;
   background: rgba(0,0,0,0.75);
   color: white;
   font-size: 0.65rem;

@@ -427,6 +427,10 @@ const Grid = (() => {
     const sw = resolveSwatch(topItem.itemTypeId, topItem.swatchId);
     if (sw) {
       el.style.background = sw.image ? `url(${sw.image}) center/cover` : sw.color;
+      // The `background` shorthand above resets background-origin back to its default
+      // (padding-box), silently undoing the CSS rule that makes the image reach the box's real
+      // border -- set it explicitly every time so this can't regress if padding ever comes back.
+      el.style.backgroundOrigin = 'border-box';
     } else {
       // Item type or swatch was deleted after this was placed -- show a visible "missing"
       // pattern instead of leaving the box invisible against the canvas.
