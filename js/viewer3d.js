@@ -163,13 +163,33 @@ const Viewer3D = (() => {
     const flatMat = new THREE.MeshStandardMaterial({ color });
     let frontMat = flatMat;
     if (sw && sw.image) {
-      const texture = new THREE.TextureLoader().load(sw.image);
+      const texture = new THREE.TextureLoader().load(sw.image, (tex) => applyCoverUV(tex, width, height));
       frontMat = new THREE.MeshStandardMaterial({ map: texture });
     }
     // BoxGeometry material order: +X, -X, +Y, -Y, +Z, -Z. Front (largest grid-Y) maps to +Z.
     const materials = [flatMat, flatMat, flatMat, flatMat, frontMat, flatMat];
     const geo = new THREE.BoxGeometry(width, height, depth);
     return new THREE.Mesh(geo, materials);
+  }
+
+  // Crops the texture to fully cover the target face (like CSS background-size:cover) instead
+  // of the default stretch-to-fill-UV behavior, which distorts or leaves the wrong crop visible
+  // whenever the photo's own aspect ratio doesn't match the box face's width:height ratio.
+  function applyCoverUV(texture, faceWidth, faceHeight) {
+    const img = texture.image;
+    if (!img || !img.width || !img.height) return;
+    const faceAspect = faceWidth / faceHeight;
+    const imageAspect = img.width / img.height;
+    if (imageAspect > faceAspect) {
+      const repeatX = faceAspect / imageAspect;
+      texture.repeat.set(repeatX, 1);
+      texture.offset.set((1 - repeatX) / 2, 0);
+    } else {
+      const repeatY = imageAspect / faceAspect;
+      texture.repeat.set(1, repeatY);
+      texture.offset.set(0, (1 - repeatY) / 2);
+    }
+    texture.needsUpdate = true;
   }
 
   function addImagePanelsToScene() {

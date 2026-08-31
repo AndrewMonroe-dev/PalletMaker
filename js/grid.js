@@ -454,10 +454,9 @@ const Grid = (() => {
     const dropXIn = (e.clientX - rect.left) / scale;
     const dropYIn = (e.clientY - rect.top) / scale;
 
-    const x = snap(dropXIn);
-    const y = snap(dropYIn);
     const footprintW = payload.footprintW;
     const footprintD = payload.footprintD;
+    const { x, y } = snapToNeighborEdges(snap(dropXIn), snap(dropYIn), footprintW, footprintD, null);
 
     if (x < 0 || y < 0 || x + footprintW > project.footprintWidth || y + footprintD > project.footprintDepth) {
       alert('That placement goes outside the floor footprint.');
@@ -523,6 +522,68 @@ const Grid = (() => {
 
   function snap(value) {
     return Math.max(0, Math.round(value / SNAP_IN) * SNAP_IN);
+  }
+
+  const EDGE_SNAP_TOLERANCE_IN = 2;
+
+  // Axis-aligned rects of everything currently on the floor (ungrouped stacks, plus members of
+  // any group that isn't meaningfully rotated), for edge-snapping. Ignores rotated groups --
+  // snapping flush against an angled neighbor isn't a well-defined single position.
+  function collectAxisAlignedRects(excludeStackId) {
+    const list = [];
+    project.stacks.filter(s => !s.groupId && s.id !== excludeStackId).forEach(s => {
+      list.push({ x: s.x, y: s.y, w: s.footprintW, d: s.footprintD });
+    });
+    project.groups.forEach(g => {
+      const angleNorm = ((g.angle % 360) + 360) % 360;
+      if (angleNorm > 0.5 && angleNorm < 359.5) return;
+      getGroupMembers(g).forEach(({ stack, worldCenter }) => {
+        if (stack.id === excludeStackId) return;
+        list.push({
+          x: worldCenter.x - stack.footprintW / 2,
+          y: worldCenter.y - stack.footprintD / 2,
+          w: stack.footprintW,
+          d: stack.footprintD
+        });
+      });
+    });
+    return list;
+  }
+
+  // If (x,y) is close to sitting flush against a neighbor's edge but not exactly on it, snap it
+  // there -- turns "aimed close but missed by an inch" into a clean adjacent placement instead
+  // of a rejected near-overlap or an awkward gap.
+  function snapToNeighborEdges(x, y, w, d, excludeStackId) {
+    const rects = collectAxisAlignedRects(excludeStackId);
+    let best = null;
+
+    rects.forEach(r => {
+      const vOverlap = Math.min(y + d, r.y + r.d) - Math.max(y, r.y);
+      if (vOverlap > 0) {
+        const dRight = Math.abs(x - (r.x + r.w));
+        if (dRight <= EDGE_SNAP_TOLERANCE_IN && (!best || dRight < best.dist)) {
+          best = { dist: dRight, x: r.x + r.w, y };
+        }
+        const dLeft = Math.abs((x + w) - r.x);
+        if (dLeft <= EDGE_SNAP_TOLERANCE_IN && (!best || dLeft < best.dist)) {
+          best = { dist: dLeft, x: r.x - w, y };
+        }
+      }
+      const hOverlap = Math.min(x + w, r.x + r.w) - Math.max(x, r.x);
+      if (hOverlap > 0) {
+        const dBelow = Math.abs(y - (r.y + r.d));
+        if (dBelow <= EDGE_SNAP_TOLERANCE_IN && (!best || dBelow < best.dist)) {
+          best = { dist: dBelow, x, y: r.y + r.d };
+        }
+        const dAbove = Math.abs((y + d) - r.y);
+        if (dAbove <= EDGE_SNAP_TOLERANCE_IN && (!best || dAbove < best.dist)) {
+          best = { dist: dAbove, x, y: r.y - d };
+        }
+      }
+    });
+
+    if (!best) return { x, y };
+    return { x: snap(best.x), y: snap(best.y) };
   }
 
   // ---- Oriented rectangle geometry (used once anything is part of a rotated group) ----
@@ -796,8 +857,9 @@ const Grid = (() => {
   }
 
   function commitStackMove(stack, op) {
-    const x = snap(stack.x);
-    const y = snap(stack.y);
+    const { x, y } = snapToNeighborEdges(
+      snap(stack.x), snap(stack.y), stack.footprintW, stack.footprintD, stack.id
+    );
 
     if (x < 0 || y < 0 || x + stack.footprintW > project.footprintWidth || y + stack.footprintD > project.footprintDepth) {
       stack.x = op.startX;
