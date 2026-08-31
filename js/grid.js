@@ -5,6 +5,7 @@
 const Grid = (() => {
   const SNAP_IN = 1;
   const PX_PER_IN_MAX = 40; // ceiling so a small floor doesn't get absurdly huge cells
+  const MERGE_OVERLAP_FRACTION = 0.8; // how much of the footprint must overlap to count as "landed on it" and merge
 
   let state = null;
   let project = null;
@@ -477,7 +478,7 @@ const Grid = (() => {
       !s.groupId &&
       Math.abs(s.footprintW - footprintW) < 0.001 &&
       Math.abs(s.footprintD - footprintD) < 0.001 &&
-      rectsOverlap(droppedRect, { x: s.x, y: s.y, w: s.footprintW, d: s.footprintD })
+      isMergeableOverlap(droppedRect, { x: s.x, y: s.y, w: s.footprintW, d: s.footprintD })
     );
 
     if (sameFootprintOverlap) {
@@ -507,6 +508,17 @@ const Grid = (() => {
 
   function rectsOverlap(a, b) {
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.d && a.y + a.d > b.y;
+  }
+
+  // "Landed on it" (should merge into a stack) vs. "just grazing it" (should be blocked as a
+  // collision, or succeed as an independent adjacent placement if there's no overlap at all).
+  // Same-footprint rects only, so either area works as the denominator.
+  function isMergeableOverlap(a, b) {
+    const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+    const iy = Math.max(0, Math.min(a.y + a.d, b.y + b.d) - Math.max(a.y, b.y));
+    const area = a.w * a.d;
+    if (area <= 0) return false;
+    return (ix * iy) / area >= MERGE_OVERLAP_FRACTION;
   }
 
   function snap(value) {
@@ -801,7 +813,7 @@ const Grid = (() => {
       s.id !== stack.id && !s.groupId &&
       Math.abs(s.footprintW - stack.footprintW) < 0.001 &&
       Math.abs(s.footprintD - stack.footprintD) < 0.001 &&
-      rectsOverlap(droppedRect, { x: s.x, y: s.y, w: s.footprintW, d: s.footprintD })
+      isMergeableOverlap(droppedRect, { x: s.x, y: s.y, w: s.footprintW, d: s.footprintD })
     );
 
     if (sameFootprintOverlap) {
