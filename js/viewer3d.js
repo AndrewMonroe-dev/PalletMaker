@@ -832,6 +832,8 @@ const Viewer3D = (() => {
   // has plenty of other on-screen chrome to exclude), so the rendered frame is captured as a PNG
   // and handed to a fresh, print-only document instead -- the browser's print dialog opens
   // automatically once that image has actually loaded.
+  // Prints the current 3D render with the item tally alongside it on the right -- same "every
+  // item in the display, how many of each" pick-list treatment as the grid's Print button.
   function handlePrintImage() {
     if (!renderer || !scene || !camera) return;
     renderer.render(scene, camera);
@@ -843,27 +845,41 @@ const Viewer3D = (() => {
       return;
     }
     const title = `${project.name || 'Pallet'} - 3D View`;
+    const tallyHtml = buildTallyTableHtml(Grid.computeTally());
     printWindow.document.write(`<!DOCTYPE html>
 <html>
 <head>
-<title>${title}</title>
+<title>${escapeHtml(title)}</title>
+<link rel="stylesheet" href="${new URL('css/style.css', window.location.href).href}">
 <style>
-  html, body { margin: 0; height: 100%; background: #fff; }
-  body { display: flex; align-items: center; justify-content: center; }
-  img { max-width: 100%; max-height: 100vh; }
+  html, body { margin: 0; background: var(--bg, #14161a); }
+  body { padding: 24px; display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  h1 { font-size: 1.1rem; margin: 0 0 12px; color: var(--text, #e8e9ec); }
+  img { max-width: 900px; width: 100%; height: auto; border: 1px solid var(--border); }
+  .print-tally-wrap { min-width: 320px; }
+  .print-tally-empty { color: var(--text-dim); font-size: 0.85rem; }
   @media print {
-    body { height: auto; }
-    img { width: 100%; height: auto; max-height: none; }
+    body { padding: 0; }
+    img { max-width: 65%; }
   }
 </style>
 </head>
 <body>
-  <img src="${dataUrl}" alt="${title}">
+  <div>
+    <h1>${escapeHtml(title)}</h1>
+    <img src="${dataUrl}" alt="${escapeHtml(title)}">
+  </div>
+  <div class="print-tally-wrap">
+    <h1>Items in this display</h1>
+    ${tallyHtml}
+  </div>
   <script>
-    document.querySelector('img').addEventListener('load', () => {
-      window.focus();
-      window.print();
-    });
+    const link = document.querySelector('link[rel="stylesheet"]');
+    const img = document.querySelector('img');
+    let ready = 0;
+    const go = () => { ready++; if (ready >= 2) { window.focus(); window.print(); } };
+    if (link.sheet) go(); else link.addEventListener('load', go);
+    if (img.complete) go(); else img.addEventListener('load', go);
   <\/script>
 </body>
 </html>`);

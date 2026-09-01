@@ -42,3 +42,39 @@ function readFileAsDataUrl(file) {
     reader.readAsDataURL(file);
   });
 }
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Renders Grid.computeTally()'s rows as an HTML table string -- shared by the grid print and the
+// 3D viewer print, so both list "every item in the display, how many of each" the same way.
+function buildTallyTableHtml(rows) {
+  if (!rows || rows.length === 0) {
+    return '<p class="print-tally-empty">Nothing placed yet.</p>';
+  }
+
+  let totalCost = 0;
+  let totalRevenue = 0;
+  const bodyRows = rows.map(r => {
+    totalCost += r.cost;
+    totalRevenue += r.revenue;
+    return `<tr>
+      <td>${escapeHtml(r.label)}</td>
+      <td>${r.isCase ? 'Case' : 'Unit'}</td>
+      <td>${r.count}</td>
+      <td>$${r.cost.toFixed(2)}</td>
+      <td>$${r.revenue.toFixed(2)}</td>
+    </tr>`;
+  }).join('');
+
+  return `<table class="tally-table">
+    <thead><tr><th>Item</th><th>Type</th><th>Count</th><th>Cost</th><th>Revenue</th></tr></thead>
+    <tbody>${bodyRows}</tbody>
+    <tfoot><tr><td colspan="3">Total</td><td>$${totalCost.toFixed(2)}</td><td>$${totalRevenue.toFixed(2)}</td></tr></tfoot>
+  </table>`;
+}
