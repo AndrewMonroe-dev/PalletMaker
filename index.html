@@ -36,9 +36,52 @@
           <button id="btnAddItemType" class="btn-icon" title="Add item type">+</button>
         </div>
         <p class="empty-state" style="margin:-4px 0 8px;">Or drag photos here to add one per image.</p>
+        <div id="bulkActionsBar" class="bulk-actions-bar hidden">
+          <span id="bulkSelectedCount">0 selected</span>
+          <button id="btnBulkEdit" class="btn-secondary">Edit Selected</button>
+          <button id="btnBulkCreateCases" class="btn-secondary">Create Case(s)</button>
+          <button id="btnBulkClear" class="btn-icon" title="Clear selection">&times;</button>
+        </div>
         <div id="itemTypeList" class="item-type-list">
           <p class="empty-state">No item types yet. Click + to add one, or drag photos in.</p>
         </div>
+      </div>
+
+      <div id="bulkEditPanel" class="bulk-panel hidden">
+        <h3>Edit Selected Item Types</h3>
+        <p class="bulk-panel-hint">Leave a field blank to leave it unchanged on every selected item. Fields you fill in are applied to all selected item types at once.</p>
+        <form id="bulkEditForm">
+          <div class="form-row-3">
+            <label>Width (in)<input type="number" step="0.01" min="0" id="bulkWidth"></label>
+            <label>Height (in)<input type="number" step="0.01" min="0" id="bulkHeight"></label>
+            <label>Depth (in)<input type="number" step="0.01" min="0" id="bulkDepth"></label>
+          </div>
+          <div class="form-row-3">
+            <label>Units/Case<input type="number" step="1" min="1" id="bulkUnitsPerCase"></label>
+            <label>Cost/Case ($)<input type="number" step="0.01" min="0" id="bulkCostPerCase"></label>
+            <label>Margin (%)<input type="number" step="0.1" min="0" max="99.99" id="bulkMargin"></label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn-primary">Apply to Selected</button>
+            <button type="button" id="btnBulkEditCancel" class="btn-secondary">Cancel</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="bulkCasePanel" class="bulk-panel hidden">
+        <h3>Create a Case From Each Selected Item Type</h3>
+        <p class="bulk-panel-hint">Builds one Case per selected item type using its own photo/color, arranged rows x columns x layers of units. Skips (and tells you about) any selected item type whose units-per-case doesn't match rows &times; cols &times; layers.</p>
+        <form id="bulkCaseForm">
+          <div class="form-row-3">
+            <label>Rows<input type="number" step="1" min="1" id="bulkRows" required></label>
+            <label>Columns<input type="number" step="1" min="1" id="bulkCols" required></label>
+            <label>Layers<input type="number" step="1" min="1" id="bulkLayers" required></label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn-primary">Create Case(s)</button>
+            <button type="button" id="btnBulkCaseCancel" class="btn-secondary">Cancel</button>
+          </div>
+        </form>
       </div>
 
       <div class="panel-detail">

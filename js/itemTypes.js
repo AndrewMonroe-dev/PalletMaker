@@ -5,6 +5,7 @@ const ItemTypes = (() => {
   let selectedId = null;
   let editingSwatches = []; // staged swatches while the form is open
   let editingId = null; // null while creating, set while editing an existing item type
+  let bulkSelectedIds = new Set(); // checkbox selection, independent of the single-row detail selection
 
   function init(appState) {
     state = appState;
@@ -37,6 +38,7 @@ const ItemTypes = (() => {
     });
 
     bindPhotoDropZone();
+    bindBulkListeners();
   }
 
   // Dropping one or more image files onto the list creates one new item type per image, each
@@ -88,8 +90,12 @@ const ItemTypes = (() => {
 
   function renderList() {
     const listEl = document.getElementById('itemTypeList');
+    // Drop any selection ids that no longer exist (deleted item type, or a fresh restore/import).
+    bulkSelectedIds.forEach(id => { if (!state.itemTypes.some(it => it.id === id)) bulkSelectedIds.delete(id); });
+
     if (state.itemTypes.length === 0) {
       listEl.innerHTML = '<p class="empty-state">No item types yet. Click + to add one.</p>';
+      renderBulkBar();
       return;
     }
     listEl.innerHTML = '';
@@ -97,6 +103,16 @@ const ItemTypes = (() => {
       const row = document.createElement('div');
       row.className = 'item-type-row' + (it.id === selectedId ? ' selected' : '');
       row.dataset.id = it.id;
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'row-select';
+      checkbox.checked = bulkSelectedIds.has(it.id);
+      checkbox.addEventListener('click', (e) => e.stopPropagation());
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) bulkSelectedIds.add(it.id); else bulkSelectedIds.delete(it.id);
+        renderBulkBar();
+      });
 
       const preview = document.createElement('div');
       preview.className = 'swatch-preview';
@@ -115,12 +131,140 @@ const ItemTypes = (() => {
       dims.className = 'row-dims';
       dims.textContent = `${it.width}"x${it.height}"x${it.depth}"`;
 
+      row.appendChild(checkbox);
       row.appendChild(preview);
       row.appendChild(name);
       row.appendChild(dims);
       row.addEventListener('click', () => showDetailFor(it.id));
       listEl.appendChild(row);
     });
+    renderBulkBar();
+  }
+
+  function renderBulkBar() {
+    const bar = document.getElementById('bulkActionsBar');
+    const count = bulkSelectedIds.size;
+    if (count === 0) {
+      bar.classList.add('hidden');
+      return;
+    }
+    bar.classList.remove('hidden');
+    document.getElementById('bulkSelectedCount').textContent = `${count} selected`;
+  }
+
+  function bindBulkListeners() {
+    document.getElementById('btnBulkClear').addEventListener('click', () => {
+      bulkSelectedIds.clear();
+      renderList();
+    });
+    document.getElementById('btnBulkEdit').addEventListener('click', openBulkEditPanel);
+    document.getElementById('btnBulkEditCancel').addEventListener('click', () => hideBulkPanel('bulkEditPanel'));
+    document.getElementById('bulkEditForm').addEventListener('submit', handleBulkEditSubmit);
+
+    document.getElementById('btnBulkCreateCases').addEventListener('click', openBulkCasePanel);
+    document.getElementById('btnBulkCaseCancel').addEventListener('click', () => hideBulkPanel('bulkCasePanel'));
+    document.getElementById('bulkCaseForm').addEventListener('submit', handleBulkCaseSubmit);
+  }
+
+  function hideBulkPanel(id) {
+    document.getElementById(id).classList.add('hidden');
+  }
+
+  function openBulkEditPanel() {
+    if (bulkSelectedIds.size === 0) return;
+    hideBulkPanel('bulkCasePanel');
+    document.getElementById('bulkEditForm').reset();
+    document.getElementById('bulkEditPanel').classList.remove('hidden');
+  }
+
+  // Applies only the fields the user actually filled in -- a blank field leaves that field
+  // untouched on every selected item type, so this can be used to change just dimensions, just
+  // pricing, or both, without accidentally zeroing out fields nobody meant to touch.
+  function handleBulkEditSubmit(e) {
+    e.preventDefault();
+    const fields = {
+      width: parseOptionalFloat('bulkWidth'),
+      height: parseOptionalFloat('bulkHeight'),
+      depth: parseOptionalFloat('bulkDepth'),
+      unitsPerCase: parseOptionalFloat('bulkUnitsPerCase'),
+      costPerCase: parseOptionalFloat('bulkCostPerCase'),
+      marginPct: parseOptionalFloat('bulkMargin')
+    };
+    const touched = Object.entries(fields).filter(([, v]) => v !== null);
+    if (touched.length === 0) {
+      alert('Fill in at least one field to apply.');
+      return;
+    }
+
+    state.itemTypes.forEach(it => {
+      if (!bulkSelectedIds.has(it.id)) return;
+      touched.forEach(([key, value]) => { it[key] = value; });
+    });
+
+    saveState(state);
+    hideBulkPanel('bulkEditPanel');
+    renderList();
+    Cases.refresh();
+    if (selectedId && bulkSelectedIds.has(selectedId)) showDetailFor(selectedId);
+    alert(`Updated ${bulkSelectedIds.size} item type${bulkSelectedIds.size > 1 ? 's' : ''}.`);
+  }
+
+  function parseOptionalFloat(id) {
+    const raw = document.getElementById(id).value;
+    if (raw === '' || raw === null) return null;
+    const n = parseFloat(raw);
+    return Number.isNaN(n) ? null : n;
+  }
+
+  function openBulkCasePanel() {
+    if (bulkSelectedIds.size === 0) return;
+    hideBulkPanel('bulkEditPanel');
+    document.getElementById('bulkCaseForm').reset();
+    document.getElementById('bulkCasePanel').classList.remove('hidden');
+  }
+
+  // Builds one Case per selected item type, reusing its own first swatch (photo/color), arranged
+  // by the same shared rows x cols x layers the user enters once here -- same shape/validation
+  // Cases.js's own form uses (unit count must match the item type's unitsPerCase), just applied to
+  // several item types in one action instead of re-filling the Cases tab's form per color.
+  function handleBulkCaseSubmit(e) {
+    e.preventDefault();
+    const rows = parseInt(document.getElementById('bulkRows').value, 10);
+    const cols = parseInt(document.getElementById('bulkCols').value, 10);
+    const layers = parseInt(document.getElementById('bulkLayers').value, 10);
+    if (!rows || !cols || !layers) return;
+    const totalUnits = rows * cols * layers;
+
+    const created = [];
+    const skipped = [];
+    state.itemTypes.forEach(it => {
+      if (!bulkSelectedIds.has(it.id)) return;
+      if (totalUnits !== it.unitsPerCase) {
+        skipped.push(`${it.name} (needs ${it.unitsPerCase}, this arrangement makes ${totalUnits})`);
+        return;
+      }
+      const firstSwatch = it.palette[0];
+      state.cases.push({
+        id: uid('case'),
+        name: `${it.name} Case`,
+        itemTypeId: it.id,
+        swatchId: firstSwatch ? firstSwatch.id : null,
+        rows, cols, layers
+      });
+      created.push(it.name);
+    });
+
+    if (created.length > 0) saveState(state);
+    hideBulkPanel('bulkCasePanel');
+    Cases.refresh();
+
+    let msg = created.length > 0
+      ? `Created ${created.length} case${created.length > 1 ? 's' : ''}: ${created.join(', ')}.`
+      : 'No cases created.';
+    if (skipped.length > 0) {
+      msg += `\n\nSkipped (unit count mismatch):\n${skipped.join('\n')}`;
+    }
+    alert(msg);
   }
 
   function showEmptyDetail() {

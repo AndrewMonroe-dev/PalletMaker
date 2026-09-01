@@ -131,6 +131,31 @@ main { padding: 20px; }
 
 .item-type-row .row-name { font-size: 0.9rem; flex: 1; }
 .item-type-row .row-dims { font-size: 0.75rem; color: var(--text-dim); }
+.item-type-row .row-select { flex-shrink: 0; }
+
+.bulk-actions-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 8px;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.bulk-actions-bar.hidden { display: none; }
+
+.bulk-panel {
+  grid-column: 1 / -1;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.bulk-panel.hidden { display: none; }
+.bulk-panel h3 { margin: 0 0 8px; }
+.bulk-panel-hint { color: var(--text-dim); font-size: 0.8rem; margin: 0 0 12px; }
+.bulk-panel .form-row-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 12px; }
+.bulk-panel .form-row-3 label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--text-dim); }
+.bulk-panel .form-row-3 input { padding: 6px 8px; }
 
 .empty-state, .empty-state-large { color: var(--text-dim); font-size: 0.9rem; }
 .empty-state-large { padding: 40px; text-align: center; }
