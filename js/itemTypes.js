@@ -69,7 +69,12 @@ const ItemTypes = (() => {
     if (images.length === 0) return;
 
     for (const file of images) {
-      const dataUrl = await readFileAsDataUrl(file);
+      const rawDataUrl = await readFileAsDataUrl(file);
+      // Re-encoded down to a display-appropriate size before it's ever stored -- see
+      // storage.js's downscaleImageDataUrl for why (this is the fix for the lockup/lost-work
+      // report: full-res photos bloating every saveState() call). Multi-image drop is exactly the
+      // scenario most likely to pile up several large originals at once.
+      const dataUrl = await downscaleImageDataUrl(rawDataUrl);
       // Sampled once here at creation time and cached on the swatch -- the grid then reads
       // avgColor directly instead of decoding/painting the full photo on every render.
       const avgColor = await computeAverageColorFromDataUrl(dataUrl);
@@ -420,10 +425,17 @@ const ItemTypes = (() => {
       return;
     }
 
-    const [image, sideImage, backImage] = await Promise.all([
+    const [rawImage, rawSideImage, rawBackImage] = await Promise.all([
       readFileAsDataUrl(imageInput.files[0]),
       readFileAsDataUrl(sideImageInput.files[0]),
       readFileAsDataUrl(backImageInput.files[0])
+    ]);
+    // Re-encoded down to a display-appropriate size before it's ever stored -- see
+    // storage.js's downscaleImageDataUrl for why (fix for the lockup/lost-work report).
+    const [image, sideImage, backImage] = await Promise.all([
+      downscaleImageDataUrl(rawImage),
+      downscaleImageDataUrl(rawSideImage),
+      downscaleImageDataUrl(rawBackImage)
     ]);
     // Sampled once here at creation time and cached on the swatch -- the grid then reads
     // avgColor directly instead of decoding/painting the full photo on every render.
@@ -506,14 +518,21 @@ const ItemTypes = (() => {
   async function addSwatchToItemType(itemTypeId, { name, color, image, sideImage, backImage }) {
     const item = getItemType(itemTypeId);
     if (!item) return null;
+    // Re-encoded down to a display-appropriate size before it's ever stored -- see
+    // storage.js's downscaleImageDataUrl for why (fix for the lockup/lost-work report).
+    const [dsImage, dsSideImage, dsBackImage] = await Promise.all([
+      downscaleImageDataUrl(image),
+      downscaleImageDataUrl(sideImage),
+      downscaleImageDataUrl(backImage)
+    ]);
     // Sampled once here at creation time and cached on the swatch -- the grid then reads
     // avgColor directly instead of decoding/painting the full photo on every render.
-    const avgColor = image ? await computeAverageColorFromDataUrl(image) : null;
+    const avgColor = dsImage ? await computeAverageColorFromDataUrl(dsImage) : null;
     const swatch = {
       id: uid('swatch'), name, color,
-      image: image || null,
-      sideImage: sideImage || null,
-      backImage: backImage || null,
+      image: dsImage || null,
+      sideImage: dsSideImage || null,
+      backImage: dsBackImage || null,
       avgColor
     };
     item.palette.push(swatch);

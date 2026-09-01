@@ -14,11 +14,29 @@ function loadState() {
   }
 }
 
+let quotaWarningShown = false; // avoid re-alerting on every periodic autosave tick once already told
+
 function saveState(state) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (e) {
+    // Real, previously-silent failure mode: localStorage typically caps around 5-10MB per origin,
+    // and full-resolution uploaded photos can burn through that fast (several MB apiece). Before
+    // this, a quota failure here threw uncaught and nothing after it ran -- the app would look like
+    // it saved (no error visible anywhere) while actually not persisting a single byte, so a later
+    // reload/crash lost everything back to whenever a save last genuinely fit. Now it's surfaced
+    // clearly instead, once per session so it doesn't re-alert on every 4s autosave tick.
+    console.error('Failed to save PalletMaker state to localStorage.', e);
+    if (!quotaWarningShown) {
+      quotaWarningShown = true;
+      alert('PalletMaker could not save your work to this browser -- it likely ran out of local storage space. Connect "Save to Computer" (top of the page) so your work saves to a real file instead, or remove some photos to free up room.');
+    }
+  }
   // Mirror out to a real file on disk too, if the user has connected one (fileSync.js) -- a
   // silent no-op when unsupported/not connected, so this is safe to call from every existing
-  // saveState() call site with no other changes needed.
+  // saveState() call site with no other changes needed. Runs even if the localStorage save above
+  // failed -- a connected file is actually MORE likely to succeed in exactly that situation, since
+  // it isn't bound by the same small per-origin quota.
   if (typeof FileSync !== 'undefined') FileSync.write(state);
 }
 
@@ -44,6 +62,45 @@ function readFileAsDataUrl(file) {
     reader.onload = (e) => resolve(e.target.result);
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
+  });
+}
+
+// Re-encodes an uploaded photo down to a display-appropriate size before it ever gets stored --
+// the real fix behind Andrew's reported lockup/reload with lost work. Full-resolution phone photos
+// (often several MB apiece as base64) were being stored completely as-is on every item type, case
+// swatch, and side/back image, with no cap -- every saveState() call does a synchronous
+// JSON.stringify + localStorage.setItem of the ENTIRE app state, so a catalog with a couple dozen
+// full-size photos could make every single edit take long enough to look like the tab froze, and
+// could exceed localStorage's ~5-10MB per-origin quota outright (see saveState()'s new catch
+// block above -- that failure was previously silent, compounding the data loss). Capping at 1000px
+// on the longest side and re-encoding as JPEG cuts a typical multi-MB photo to tens of KB, with no
+// visible quality loss at the sizes this app actually displays images (grid/3D box faces, print
+// pages, small thumbnails). Transparent PNGs get a white backing fill first since JPEG has no alpha
+// channel -- an acceptable trade-off for product photography, which is rarely transparent to begin
+// with. Runs once at upload time, not on every render, so it's a one-time cost per photo.
+function downscaleImageDataUrl(dataUrl, maxDim = 1000, quality = 0.85) {
+  return new Promise((resolve) => {
+    if (!dataUrl) { resolve(null); return; }
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      } catch (e) {
+        resolve(dataUrl); // fall back to the original rather than losing the image entirely
+      }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
   });
 }
 
