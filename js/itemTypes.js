@@ -13,6 +13,14 @@ const ItemTypes = (() => {
     showEmptyDetail();
   }
 
+  // For after something else (a full backup restore) replaces state.itemTypes wholesale --
+  // re-renders against the new data without re-binding listeners a second time. The old selection
+  // may point at a row that no longer exists, so just drop back to the empty state rather than try
+  // to preserve it.
+  function refresh() {
+    showEmptyDetail();
+  }
+
   function bindStaticListeners() {
     document.getElementById('btnAddItemType').addEventListener('click', openNewForm);
     document.getElementById('btnCancelForm').addEventListener('click', () => {
@@ -20,12 +28,62 @@ const ItemTypes = (() => {
       if (selectedId) showDetailFor(selectedId); else showEmptyDetail();
     });
     document.getElementById('itemTypeForm').addEventListener('submit', handleSubmit);
+    document.getElementById('btnDuplicateItemType').addEventListener('click', handleDuplicate);
     document.getElementById('btnDeleteItemType').addEventListener('click', handleDelete);
     document.getElementById('btnAddSwatch').addEventListener('click', handleAddSwatch);
 
     ['fCostPerCase', 'fUnitsPerCase', 'fMargin'].forEach(id => {
       document.getElementById(id).addEventListener('input', updateComputedFields);
     });
+
+    bindPhotoDropZone();
+  }
+
+  // Dropping one or more image files onto the list creates one new item type per image, each
+  // pre-filled with that photo as its front swatch and placeholder dimensions/pricing -- click
+  // each one afterward to fill in its real name, size, and cost. Distinct from the app's own
+  // internal drag-and-drop (grid placement, which carries an "application/json" payload, not
+  // Files) -- this only reacts to real OS files being dragged in from outside the browser.
+  function bindPhotoDropZone() {
+    const listEl = document.getElementById('itemTypeList');
+    listEl.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer.types.includes('Files')) return;
+      e.preventDefault();
+      listEl.classList.add('drag-over-files');
+    });
+    listEl.addEventListener('dragleave', (e) => {
+      if (!listEl.contains(e.relatedTarget)) listEl.classList.remove('drag-over-files');
+    });
+    listEl.addEventListener('drop', (e) => {
+      if (!e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+      e.preventDefault();
+      listEl.classList.remove('drag-over-files');
+      handlePhotoDrop(Array.from(e.dataTransfer.files));
+    });
+  }
+
+  async function handlePhotoDrop(files) {
+    const images = files.filter(f => f.type.startsWith('image/'));
+    if (images.length === 0) return;
+
+    for (const file of images) {
+      const dataUrl = await readFileAsDataUrl(file);
+      const name = file.name.replace(/\.[^./\\]+$/, '') || 'New Item';
+      state.itemTypes.push({
+        id: uid('item'),
+        name,
+        // Placeholder dimensions/pricing -- structurally valid so nothing downstream breaks, but
+        // deliberately obvious/wrong so it's clear each one still needs its real numbers filled
+        // in. 1x1x1 rather than 0 so it renders as a real (if tiny) box if placed before editing.
+        width: 1, height: 1, depth: 1,
+        unitsPerCase: 1, costPerCase: 0, marginPct: 30,
+        palette: [{ id: uid('swatch'), name: 'Main', color: '#8b1e2b', image: dataUrl, sideImage: null, backImage: null }]
+      });
+    }
+
+    saveState(state);
+    renderList();
+    alert(`Added ${images.length} new item type${images.length > 1 ? 's' : ''} from the dropped photo${images.length > 1 ? 's' : ''}. Click each one to set its real name, dimensions, and pricing.`);
   }
 
   function renderList() {
@@ -81,6 +139,7 @@ const ItemTypes = (() => {
     populateForm(item);
     showForm();
     document.getElementById('formTitle').textContent = 'Edit Item Type';
+    document.getElementById('btnDuplicateItemType').classList.remove('hidden');
     document.getElementById('btnDeleteItemType').classList.remove('hidden');
     editingId = id;
   }
@@ -92,10 +151,42 @@ const ItemTypes = (() => {
     editingSwatches = [];
     document.getElementById('itemTypeForm').reset();
     document.getElementById('formTitle').textContent = 'New Item Type';
+    document.getElementById('btnDuplicateItemType').classList.add('hidden');
     document.getElementById('btnDeleteItemType').classList.add('hidden');
     document.getElementById('itemTypeDetailEmpty').classList.add('hidden');
     renderSwatchEditor();
     updateComputedFields();
+    showForm();
+  }
+
+  // Clones the item type currently open in the form -- same dimensions, pricing, and palette
+  // (photos/colors included, with fresh swatch ids so editing the copy's swatches later can't
+  // collide with the original's) -- as a fast starting point for a same-photo, different-size
+  // variant. Opens the clone directly in the (unsaved) edit form so the name and dimensions are
+  // right there to change; nothing is written to state until Save is clicked, same as any other
+  // edit.
+  function handleDuplicate() {
+    if (!editingId) return;
+    const original = state.itemTypes.find(i => i.id === editingId);
+    if (!original) return;
+
+    editingId = null; // Save will create a new record instead of overwriting the original
+    selectedId = null;
+    renderList();
+    document.getElementById('itemTypeDetailEmpty').classList.add('hidden');
+    document.getElementById('fName').value = `${original.name} (copy)`;
+    document.getElementById('fWidth').value = original.width;
+    document.getElementById('fHeight').value = original.height;
+    document.getElementById('fDepth').value = original.depth;
+    document.getElementById('fUnitsPerCase').value = original.unitsPerCase;
+    document.getElementById('fCostPerCase').value = original.costPerCase;
+    document.getElementById('fMargin').value = original.marginPct;
+    editingSwatches = original.palette.map(s => ({ ...s, id: uid('swatch') }));
+    renderSwatchEditor();
+    updateComputedFields();
+    document.getElementById('formTitle').textContent = 'New Item Type (duplicated)';
+    document.getElementById('btnDuplicateItemType').classList.add('hidden');
+    document.getElementById('btnDeleteItemType').classList.add('hidden');
     showForm();
   }
 
@@ -277,5 +368,5 @@ const ItemTypes = (() => {
     return swatch;
   }
 
-  return { init, getItemType, getAll, addSwatchToItemType };
+  return { init, refresh, getItemType, getAll, addSwatchToItemType };
 })();

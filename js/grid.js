@@ -1995,6 +1995,21 @@ const Grid = (() => {
   }
 
   function refresh() {
+    // If something outside Grid's own handlers replaced state.projects wholesale (a full backup
+    // restore), the previously-loaded project object may no longer be part of it, or
+    // activeProjectId may now point elsewhere -- re-derive from current state before rendering
+    // rather than trusting a possibly-stale reference. Only resets selection/undo history when
+    // the project actually changed underneath it, so a normal tab switch (the common case) stays
+    // exactly as cheap and non-disruptive as before.
+    const freshProject = state.projects.find(p => p.id === state.activeProjectId) || null;
+    if (freshProject !== project) {
+      loadActiveProject();
+      selectedStackId = null;
+      selectedGroupId = null;
+      selectedTopper = null;
+      multiSelectIds.clear();
+      clearHistory();
+    }
     render();
   }
 

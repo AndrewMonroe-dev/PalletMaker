@@ -15,6 +15,13 @@
     <button class="tab-btn" data-tab="grid">Grid</button>
     <button class="tab-btn" data-tab="viewer3d">3D Viewer</button>
   </nav>
+  <div class="app-header-backup">
+    <button id="btnExportAllData" class="btn-secondary" title="Download everything -- item types, cases, and all projects -- as one backup file">Backup All</button>
+    <label class="file-btn" title="Replace everything with a previously downloaded backup file">
+      Restore Backup
+      <input type="file" id="btnImportAllData" accept="application/json" hidden>
+    </label>
+  </div>
 </header>
 
 <main>
@@ -25,8 +32,9 @@
           <h2>Item Types</h2>
           <button id="btnAddItemType" class="btn-icon" title="Add item type">+</button>
         </div>
+        <p class="empty-state" style="margin:-4px 0 8px;">Or drag photos here to add one per image.</p>
         <div id="itemTypeList" class="item-type-list">
-          <p class="empty-state">No item types yet. Click + to add one.</p>
+          <p class="empty-state">No item types yet. Click + to add one, or drag photos in.</p>
         </div>
       </div>
 
@@ -85,6 +93,7 @@
 
           <div class="form-actions">
             <button type="submit" class="btn-primary">Save Item Type</button>
+            <button type="button" id="btnDuplicateItemType" class="btn-secondary hidden">Duplicate</button>
             <button type="button" id="btnDeleteItemType" class="btn-danger hidden">Delete</button>
             <button type="button" id="btnCancelForm" class="btn-secondary">Cancel</button>
           </div>

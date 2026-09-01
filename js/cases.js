@@ -12,6 +12,12 @@ const Cases = (() => {
     showEmptyDetail();
   }
 
+  // For after something else (a full backup restore) replaces state.cases wholesale -- re-renders
+  // against the new data without re-binding listeners a second time.
+  function refresh() {
+    showEmptyDetail();
+  }
+
   function bindStaticListeners() {
     document.getElementById('btnAddCase').addEventListener('click', openNewForm);
     document.getElementById('btnCancelCaseForm').addEventListener('click', () => {
@@ -291,5 +297,5 @@ const Cases = (() => {
     renderList();
   }
 
-  return { init, getCase, getAll, refreshForNewItemTypes };
+  return { init, refresh, getCase, getAll, refreshForNewItemTypes };
 })();

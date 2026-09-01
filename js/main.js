@@ -28,6 +28,61 @@
   Grid.init(appState);
   Viewer3D.init(appState);
 
+  // ---- Full backup / restore (everything: item types, cases, every project) ----
+  // Distinct from the Grid tab's own Export/Import JSON, which only covers the single active
+  // project -- this is a complete snapshot of appState, so a lost/corrupted localStorage never
+  // means losing everything with no way back.
+
+  document.getElementById('btnExportAllData').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(appState, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `palletmaker_backup_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  document.getElementById('btnImportAllData').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      let imported;
+      try {
+        imported = JSON.parse(evt.target.result);
+      } catch (err) {
+        alert(`Could not read that file: ${err.message}`);
+        return;
+      }
+      if (!Array.isArray(imported.itemTypes) || !Array.isArray(imported.cases) || !Array.isArray(imported.projects)) {
+        alert('Not a recognizable PalletMaker backup file.');
+        return;
+      }
+      if (!confirm('This replaces everything currently in PalletMaker -- all item types, cases, and every project -- with the contents of this backup. This cannot be undone. Continue?')) {
+        return;
+      }
+      // Mutate the existing appState object in place (not reassign it) -- every module holds its
+      // own reference to this exact object, so this is what makes the swap visible to all of them
+      // without needing to re-run their init() (which would re-bind every button/listener a
+      // second time).
+      appState.itemTypes = imported.itemTypes;
+      appState.cases = imported.cases;
+      appState.projects = imported.projects;
+      appState.activeProjectId = imported.activeProjectId || null;
+      saveState(appState);
+      ItemTypes.refresh();
+      Cases.refresh();
+      Grid.refresh();
+      Viewer3D.refresh();
+      alert('Backup restored.');
+    };
+    reader.readAsText(file);
+  });
+
   // Safety net: everything else already calls saveState() right after it mutates appState, but
   // if any interaction ever misses that (a thrown error mid-handler, a browser quirk around
   // native drag-and-drop, etc.) this periodic save -- plus one right before the page is hidden or

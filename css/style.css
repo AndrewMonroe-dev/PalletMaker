@@ -37,6 +37,8 @@ body {
 
 .tabs { display: flex; gap: 6px; }
 
+.app-header-backup { display: flex; gap: 8px; margin-left: auto; }
+
 .tab-btn {
   background: transparent;
   color: var(--text-dim);
@@ -93,6 +95,11 @@ main { padding: 20px; }
 .btn-icon:hover { background: var(--accent-hover); }
 
 .item-type-list { display: flex; flex-direction: column; gap: 6px; }
+.item-type-list.drag-over-files {
+  outline: 2px dashed var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius);
+}
 
 .item-type-row {
   display: flex;
