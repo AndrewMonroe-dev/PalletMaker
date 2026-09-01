@@ -1123,6 +1123,19 @@ const Grid = (() => {
     return ok;
   }
 
+  // Same shape as setGroupAngle, but for repositioning the group instead -- used by the 3D
+  // viewer's drag-to-move (the 2D grid has its own equivalent drag path in commitStackMove /
+  // startGroupMove already). Returns true/false so the caller can tell the user when a move was
+  // rejected.
+  function moveGroup(groupId, centerX, centerY) {
+    const group = project.groups.find(g => g.id === groupId);
+    if (!group) return false;
+    const before = snapshotProject();
+    const ok = tryApplyGroupTransform(group, centerX, centerY, group.angle);
+    if (ok) pushUndo(before);
+    return ok;
+  }
+
   function tryApplyGroupTransform(group, centerX, centerY, angle) {
     const prev = { centerX: group.centerX, centerY: group.centerY, angle: group.angle };
     group.centerX = centerX;
@@ -1981,6 +1994,6 @@ const Grid = (() => {
 
   return {
     init, refresh, getActiveProject, getGroupMembers, resolveSwatch, computeTally,
-    groupStacks: groupStackIds, setGroupAngle
+    groupStacks: groupStackIds, setGroupAngle, moveGroup
   };
 })();

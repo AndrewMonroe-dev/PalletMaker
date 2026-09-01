@@ -104,9 +104,7 @@ const Viewer3D = (() => {
 
       const stackHit = raycastObjects(e, Object.values(stackMeshMap));
       if (stackHit) {
-        // Plain click-to-select, no drag -- cases move only via the 2D grid; the 3D view is for
-        // highlighting and rotating a selection in place.
-        handleStackClick3D(stackHit.object.userData.stackId, e.shiftKey);
+        startStackInteractionDrag3D(e, stackHit.object.userData.stackId);
         return;
       }
 
@@ -120,6 +118,7 @@ const Viewer3D = (() => {
       else if (dragOp3d.type === 'resize') doResizeDrag(e);
       else if (dragOp3d.type === 'rotate') doRotateDrag(e);
       else if (dragOp3d.type === 'group-rotate') doGroupRotateDrag3D(e);
+      else if (dragOp3d.type === 'group-move') doGroupMoveDrag3D(e);
     });
 
     window.addEventListener('mouseup', () => {
@@ -145,6 +144,10 @@ const Viewer3D = (() => {
       }
       if (op.type === 'group-rotate') {
         finishGroupRotateDrag3D(op);
+        return;
+      }
+      if (op.type === 'group-move') {
+        finishGroupMoveDrag3D(op);
         return;
       }
       if (op.moved) {
@@ -437,18 +440,48 @@ const Viewer3D = (() => {
     return project.stacks.find(s => s.id === stackId) || null;
   }
 
-  function handleStackClick3D(stackId, shiftKey) {
+  // A grouped stack starts a potential move drag immediately on mousedown (selecting the group
+  // right away too, so highlight/handle show up even if the mouse never actually moves) -- mirrors
+  // the 2D grid's own "mousedown always starts a potential drag; mouseup with no real movement is
+  // just a click" pattern. An ungrouped stack has no move support in 3D yet (out of scope -- move
+  // it via the 2D grid), so it's still a plain select/multi-select click.
+  function startStackInteractionDrag3D(e, stackId) {
     const stack = findStack(stackId);
     if (!stack) return;
 
     if (stack.groupId) {
-      // Clicking any member of an existing group selects the whole group, matching the 2D grid
-      // (individual members of a group aren't separately selectable there either).
-      selectedGroupId3D = stack.groupId;
-      selectedStackIds3D.clear();
-      rebuildSelectionVisuals3D();
+      const group = project.groups.find(g => g.id === stack.groupId);
+      if (!group) return;
+
+      if (selectedGroupId3D !== group.id) {
+        selectedGroupId3D = group.id;
+        selectedStackIds3D.clear();
+        rebuildSelectionVisuals3D();
+      }
+
+      const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+      dragOp3d = {
+        type: 'group-move',
+        groupId: group.id,
+        plane: floorPlane,
+        startWorldPoint: raycastPlane(e, floorPlane),
+        startCenterX: group.centerX,
+        startCenterY: group.centerY,
+        previewCenterX: group.centerX,
+        previewCenterY: group.centerY,
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        moved: false
+      };
       return;
     }
+
+    handleStackClick3D(stackId, e.shiftKey);
+  }
+
+  function handleStackClick3D(stackId, shiftKey) {
+    const stack = findStack(stackId);
+    if (!stack) return;
 
     selectedGroupId3D = null;
     if (shiftKey) {
@@ -534,10 +567,10 @@ const Viewer3D = (() => {
     renderSelectionPanel3D();
   }
 
-  // Pure function mirroring Grid.getGroupMembers' rotation math for a hypothetical angle, without
-  // touching the group's real (persisted, undo-tracked) angle -- used for the live preview during
-  // a rotate drag so nothing is committed until mouseup.
-  function computeGroupMemberWorldCentersAtAngle(group, angleDeg) {
+  // Pure function mirroring Grid.getGroupMembers' transform math for a hypothetical center/angle,
+  // without touching the group's real (persisted, undo-tracked) values -- used for the live
+  // preview during a move or rotate drag so nothing is committed until mouseup.
+  function computeGroupMemberWorldCentersAtTransform(group, centerX, centerY, angleDeg) {
     const a = (angleDeg * Math.PI) / 180;
     const cos = Math.cos(a), sin = Math.sin(a);
     return group.memberIds.map(stackId => {
@@ -545,8 +578,8 @@ const Viewer3D = (() => {
       return {
         stackId,
         worldCenter: {
-          x: group.centerX + m.dx * cos - m.dy * sin,
-          y: group.centerY + m.dx * sin + m.dy * cos
+          x: centerX + m.dx * cos - m.dy * sin,
+          y: centerY + m.dx * sin + m.dy * cos
         }
       };
     });
@@ -589,7 +622,8 @@ const Viewer3D = (() => {
 
     // Live-reposition the real box meshes (and the highlight/handle) at the preview angle --
     // visual only, group.angle itself is never touched until the drag commits on mouseup.
-    computeGroupMemberWorldCentersAtAngle(group, angle).forEach(({ stackId, worldCenter }) => {
+    const previewMembers = computeGroupMemberWorldCentersAtTransform(group, group.centerX, group.centerY, angle);
+    previewMembers.forEach(({ stackId, worldCenter }) => {
       const boxes = stackBoxesByStackId[stackId] || [];
       boxes.forEach(box => {
         box.position.x = toSceneX(worldCenter.x);
@@ -601,7 +635,7 @@ const Viewer3D = (() => {
     removeStackHighlights3D();
     const members = Grid.getGroupMembers(group).map(({ stack }, i) => ({
       stack,
-      worldCenter: computeGroupMemberWorldCentersAtAngle(group, angle)[i].worldCenter
+      worldCenter: previewMembers[i].worldCenter
     }));
     members.forEach(({ stack, worldCenter }) => addStackHighlight3D(stack, worldCenter, angle));
     if (groupRotateHandle3D) {
@@ -617,6 +651,57 @@ const Viewer3D = (() => {
     // pre-drag state itself -- nothing above ever touched the persisted group.angle.
     const ok = Grid.setGroupAngle(op.groupId, op.previewAngle);
     if (!ok) alert('That rotation would overlap something else or leave the floor. Reverted.');
+    saveState(state);
+    refresh();
+  }
+
+  // Dragging a selected group's body (any of its member boxes) translates it across the floor --
+  // raycast against the floor plane so the group tracks the cursor's real ground position, same
+  // "live visuals only, single real commit on mouseup" pattern as rotate.
+  function doGroupMoveDrag3D(e) {
+    const group = project.groups.find(g => g.id === dragOp3d.groupId);
+    const point = raycastPlane(e, dragOp3d.plane);
+    if (!group || !point || !dragOp3d.startWorldPoint) return;
+
+    if (Math.abs(e.clientX - dragOp3d.startClientX) > 3 || Math.abs(e.clientY - dragOp3d.startClientY) > 3) {
+      dragOp3d.moved = true;
+    }
+
+    // toSceneX/toSceneZ are pure translations (no rotation), so a world-space delta maps straight
+    // onto grid-space centerX/Y regardless of the group's own rotation.
+    const deltaX = point.x - dragOp3d.startWorldPoint.x;
+    const deltaZ = point.z - dragOp3d.startWorldPoint.z;
+    const newCenterX = dragOp3d.startCenterX + deltaX;
+    const newCenterY = dragOp3d.startCenterY + deltaZ;
+    dragOp3d.previewCenterX = newCenterX;
+    dragOp3d.previewCenterY = newCenterY;
+
+    const previewMembers = computeGroupMemberWorldCentersAtTransform(group, newCenterX, newCenterY, group.angle);
+    previewMembers.forEach(({ stackId, worldCenter }) => {
+      const boxes = stackBoxesByStackId[stackId] || [];
+      boxes.forEach(box => {
+        box.position.x = toSceneX(worldCenter.x);
+        box.position.z = toSceneZ(worldCenter.y);
+      });
+    });
+
+    removeStackHighlights3D();
+    const members = Grid.getGroupMembers(group).map(({ stack }, i) => ({
+      stack,
+      worldCenter: previewMembers[i].worldCenter
+    }));
+    members.forEach(({ stack, worldCenter }) => addStackHighlight3D(stack, worldCenter, group.angle));
+    if (groupRotateHandle3D) {
+      let maxHeight = 1;
+      members.forEach(({ stack }) => { maxHeight = Math.max(maxHeight, computeStackTotalHeight(stack)); });
+      groupRotateHandle3D.position.set(toSceneX(newCenterX), maxHeight + 3, toSceneZ(newCenterY));
+    }
+  }
+
+  function finishGroupMoveDrag3D(op) {
+    if (!op.moved) return;
+    const ok = Grid.moveGroup(op.groupId, op.previewCenterX, op.previewCenterY);
+    if (!ok) alert('That move would overlap something else or leave the floor. Reverted.');
     saveState(state);
     refresh();
   }
@@ -643,7 +728,7 @@ const Viewer3D = (() => {
           Angle (degrees)
           <input type="number" id="viewer3dGroupAngle" step="1" value="${Math.round(group.angle)}">
         </label>
-        <p class="empty-state">Drag the green handle above the group to rotate freely.</p>
+        <p class="empty-state">Drag any case in the group to move it. Drag the green handle above it to rotate freely.</p>
       `;
       document.getElementById('viewer3dGroupAngle').addEventListener('change', (e) => {
         const ok = Grid.setGroupAngle(group.id, parseFloat(e.target.value) || 0);
