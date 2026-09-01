@@ -1,17 +1,23 @@
-/* Top-down grid: drag cases/units onto a real-world-scale floor, stack by exact footprint match,
-   snap to 1in, block on true overlap. Also supports grouping several stacks and freely rotating
-   the group as a rigid unit (collision-checked via oriented-rectangle math, not axis-aligned boxes). */
+/* Top-down grid: drag cases/units onto a real-world-scale floor, snap to 1in, block on true
+   overlap. A dropped item that fully covers a same-footprint target merges into its base column
+   (e.g. another case of the same size). A dropped item smaller than its target becomes a
+   "topper" -- an independently-positioned item resting on that stack's top surface, so several
+   units can sit side by side on top of one case. Also supports grouping several stacks and freely
+   rotating the group as a rigid unit (collision-checked via oriented-rectangle math). Toppers are
+   one level deep only -- a topper can't have its own toppers. */
 
 const Grid = (() => {
   const SNAP_IN = 1;
   const PX_PER_IN_MAX = 40; // ceiling so a small floor doesn't get absurdly huge cells
   const MERGE_OVERLAP_FRACTION = 0.8; // how much of the footprint must overlap to count as "landed on it" and merge
+  const EDGE_SNAP_TOLERANCE_IN = 2;
 
   let state = null;
   let project = null;
   let scale = 1; // px per inch
 
   let selectedStackId = null;      // single ungrouped stack selected
+  let selectedTopper = null;       // { stackId, topperId } selected
   let multiSelectIds = new Set();  // ungrouped stack ids selected for grouping
   let selectedGroupId = null;      // a group selected
 
@@ -90,6 +96,7 @@ const Grid = (() => {
     project = snap;
     selectedStackId = null;
     selectedGroupId = null;
+    selectedTopper = null;
     multiSelectIds.clear();
     saveState(state);
     render();
@@ -113,6 +120,13 @@ const Grid = (() => {
     project = state.projects.find(p => p.id === state.activeProjectId) || null;
     if (project && !project.groups) project.groups = [];
     if (project && !project.imagePanels) project.imagePanels = [];
+    ensureToppersField(project);
+  }
+
+  // Projects saved before toppers existed have no `toppers` array on their stacks.
+  function ensureToppersField(proj) {
+    if (!proj) return;
+    (proj.stacks || []).forEach(s => { if (!s.toppers) s.toppers = []; });
   }
 
   function handleCreateProject(e) {
@@ -143,6 +157,7 @@ const Grid = (() => {
     creatingNew = false;
     selectedStackId = null;
     selectedGroupId = null;
+    selectedTopper = null;
     multiSelectIds.clear();
     clearHistory();
     saveState(state);
@@ -155,6 +170,7 @@ const Grid = (() => {
     creatingNew = false;
     selectedStackId = null;
     selectedGroupId = null;
+    selectedTopper = null;
     multiSelectIds.clear();
     clearHistory();
     saveState(state);
@@ -169,6 +185,7 @@ const Grid = (() => {
     project = null;
     selectedStackId = null;
     selectedGroupId = null;
+    selectedTopper = null;
     multiSelectIds.clear();
     clearHistory();
     saveState(state);
@@ -201,12 +218,14 @@ const Grid = (() => {
         imported.id = uid('project');
         imported.groups = imported.groups || [];
         imported.imagePanels = imported.imagePanels || [];
+        ensureToppersField(imported);
         state.projects.push(imported);
         state.activeProjectId = imported.id;
         loadActiveProject();
         creatingNew = false;
         selectedStackId = null;
         selectedGroupId = null;
+    selectedTopper = null;
         multiSelectIds.clear();
         clearHistory();
         saveState(state);
@@ -374,12 +393,14 @@ const Grid = (() => {
 
     ungroupedStacks.forEach(stack => {
       canvas.appendChild(buildStackEl(stack));
+      stack.toppers.forEach(topper => canvas.appendChild(buildTopperEl(stack, topper)));
     });
 
     project.groups.forEach(group => {
       const members = getGroupMembers(group);
       members.forEach(({ stack, worldCenter }) => {
         canvas.appendChild(buildGroupMemberEl(group, stack, worldCenter));
+        stack.toppers.forEach(topper => canvas.appendChild(buildGroupTopperEl(group, stack, worldCenter, topper)));
       });
       const handle = buildRotateHandleEl(group, members);
       if (handle) canvas.appendChild(handle);
@@ -415,12 +436,49 @@ const Grid = (() => {
       } else {
         selectedStackId = stack.id;
         selectedGroupId = null;
+        selectedTopper = null;
         multiSelectIds.clear();
       }
       render();
     });
 
     return el;
+  }
+
+  // A topper's box on the 2D floor: positioned within its parent stack's rectangle at the
+  // topper's local offset, rendered smaller with its own border so it visibly reads as sitting on
+  // top rather than as part of the base. Toppers aren't independently draggable -- delete and
+  // re-drop to reposition one.
+  function buildTopperEl(stack, topper) {
+    const el = document.createElement('div');
+    el.className = 'grid-stack grid-topper' + (isTopperSelected(stack.id, topper.id) ? ' selected' : '');
+    el.style.left = `${(stack.x + topper.dx) * scale}px`;
+    el.style.top = `${(stack.y + topper.dy) * scale}px`;
+    el.style.width = `${topper.footprintW * scale}px`;
+    el.style.height = `${topper.footprintD * scale}px`;
+
+    applySwatchBackground(el, topper.items[topper.items.length - 1]);
+
+    const badge = document.createElement('span');
+    badge.className = 'stack-badge';
+    badge.textContent = topper.items.length > 1 ? `x${topper.items.length}` : '1';
+    el.appendChild(badge);
+
+    el.addEventListener('mousedown', (e) => e.stopPropagation());
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectedTopper = { stackId: stack.id, topperId: topper.id };
+      selectedStackId = null;
+      selectedGroupId = null;
+      multiSelectIds.clear();
+      render();
+    });
+
+    return el;
+  }
+
+  function isTopperSelected(stackId, topperId) {
+    return !!selectedTopper && selectedTopper.stackId === stackId && selectedTopper.topperId === topperId;
   }
 
   function applySwatchBackground(el, topItem) {
@@ -465,12 +523,6 @@ const Grid = (() => {
 
     const footprintW = payload.footprintW;
     const footprintD = payload.footprintD;
-    const { x, y } = snapToNeighborEdges(snap(dropXIn), snap(dropYIn), footprintW, footprintD, null);
-
-    if (x < 0 || y < 0 || x + footprintW > project.footprintWidth || y + footprintD > project.footprintDepth) {
-      alert('That placement goes outside the floor footprint.');
-      return;
-    }
 
     const newItem = {
       kind: payload.kind,
@@ -479,24 +531,59 @@ const Grid = (() => {
       caseId: payload.caseId || null
     };
 
-    const droppedRect = { x, y, w: footprintW, d: footprintD };
-    const droppedCorners = aabbCorners(x, y, footprintW, footprintD);
+    // Try landing on a stackable target (base column or topper) using the raw grid-snapped drop
+    // point first, BEFORE any floor-level neighbor-edge-snapping -- that snap is meant to butt a
+    // floor item flush against its neighbors, but a drop point near the far edge of a big target
+    // (e.g. a case) would otherwise get pulled clean off of it and onto the floor beside it.
+    const rawX = snap(dropXIn);
+    const rawY = snap(dropYIn);
+    const placement = resolvePlacement(footprintW, footprintD, rawX, rawY, null);
 
-    const sameFootprintOverlap = project.stacks.find(s =>
-      !s.groupId &&
-      Math.abs(s.footprintW - footprintW) < 0.001 &&
-      Math.abs(s.footprintD - footprintD) < 0.001 &&
-      isMergeableOverlap(droppedRect, { x: s.x, y: s.y, w: s.footprintW, d: s.footprintD })
-    );
+    if (placement && placement.blocked) {
+      alert(placement.reason);
+      return;
+    }
 
-    if (sameFootprintOverlap) {
+    const { x, y } = placement
+      ? { x: rawX, y: rawY }
+      : snapToNeighborEdges(rawX, rawY, footprintW, footprintD, null);
+
+    if (!placement && (x < 0 || y < 0 || x + footprintW > project.footprintWidth || y + footprintD > project.footprintDepth)) {
+      alert('That placement goes outside the floor footprint.');
+      return;
+    }
+
+    if (placement && placement.mode === 'base') {
       pushUndo(snapshotProject());
-      sameFootprintOverlap.items.push(newItem);
+      placement.targetStack.items.push(newItem);
       saveState(state);
       render();
       return;
     }
 
+    if (placement && placement.mode === 'merge-topper') {
+      pushUndo(snapshotProject());
+      placement.topper.items.push(newItem);
+      saveState(state);
+      render();
+      return;
+    }
+
+    if (placement && placement.mode === 'new-topper') {
+      pushUndo(snapshotProject());
+      placement.targetStack.toppers.push({
+        id: uid('topper'),
+        dx: placement.localX,
+        dy: placement.localY,
+        footprintW, footprintD,
+        items: [newItem]
+      });
+      saveState(state);
+      render();
+      return;
+    }
+
+    const droppedCorners = aabbCorners(x, y, footprintW, footprintD);
     if (collidesWithAnything(droppedCorners, { excludeStackId: null, excludeGroupId: null })) {
       alert('That overlaps an existing stack or group. Move it or pick a spot with room.');
       return;
@@ -508,6 +595,7 @@ const Grid = (() => {
       x, y,
       footprintW, footprintD,
       items: [newItem],
+      toppers: [],
       groupId: null
     });
     saveState(state);
@@ -518,9 +606,21 @@ const Grid = (() => {
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.d && a.y + a.d > b.y;
   }
 
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  // A dropped/moved footprint can stack onto a target only if it's no bigger than the target in
+  // either dimension -- a case can't balance on top of a single unit, but a unit (or a smaller
+  // case) can sit on top of a bigger case.
+  function isStackable(dropped, target) {
+    return dropped.w <= target.w + 0.01 && dropped.d <= target.d + 0.01;
+  }
+
   // "Landed on it" (should merge into a stack) vs. "just grazing it" (should be blocked as a
   // collision, or succeed as an independent adjacent placement if there's no overlap at all).
-  // Same-footprint rects only, so either area works as the denominator.
+  // Denominator is always the dropped item's own footprint -- since a stackable item is always
+  // the same size or smaller than its target, "mostly within the target" is what matters.
   function isMergeableOverlap(a, b) {
     const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
     const iy = Math.max(0, Math.min(a.y + a.d, b.y + b.d) - Math.max(a.y, b.y));
@@ -529,11 +629,104 @@ const Grid = (() => {
     return (ix * iy) / area >= MERGE_OVERLAP_FRACTION;
   }
 
+  // Resolves what placing a footprintW x footprintD item at global (x,y) should do: merge into a
+  // same-footprint target's base column, merge into (or create) a topper resting on a bigger
+  // target's top surface, or (if no stackable target underlies it) return null so the caller
+  // falls back to plain floor placement. excludeStackId lets a stack being dragged ignore itself.
+  function resolvePlacement(footprintW, footprintD, x, y, excludeStackId) {
+    const droppedRect = { x, y, w: footprintW, d: footprintD };
+    const droppedCenter = { x: x + footprintW / 2, y: y + footprintD / 2 };
+
+    const targetStack = project.stacks.find(s => {
+      if (s.groupId || s.id === excludeStackId) return false;
+      if (!isStackable({ w: footprintW, d: footprintD }, { w: s.footprintW, d: s.footprintD })) return false;
+
+      const sameFootprint = Math.abs(s.footprintW - footprintW) < 0.01 && Math.abs(s.footprintD - footprintD) < 0.01;
+      if (sameFootprint) {
+        return isMergeableOverlap(droppedRect, { x: s.x, y: s.y, w: s.footprintW, d: s.footprintD });
+      }
+      // A genuinely smaller item can't be reliably tested by area-overlap of its raw (unclamped)
+      // drop rect -- it may hang off whichever edge of the target it was dropped near. Its center
+      // landing within the target's footprint is what "aimed at this target" actually means; the
+      // final position gets clamped to fit inside afterward.
+      return droppedCenter.x >= s.x && droppedCenter.x <= s.x + s.footprintW &&
+        droppedCenter.y >= s.y && droppedCenter.y <= s.y + s.footprintD;
+    });
+    if (!targetStack) return null;
+
+    const fullCoverage = Math.abs(targetStack.footprintW - footprintW) < 0.01 &&
+      Math.abs(targetStack.footprintD - footprintD) < 0.01;
+
+    if (fullCoverage) {
+      if (targetStack.toppers.length > 0) {
+        return { blocked: true, reason: 'That stack already has units placed on top of it -- remove them first, or drop somewhere else.' };
+      }
+      return { targetStack, mode: 'base' };
+    }
+
+    let localX = clamp(snap(x - targetStack.x), 0, targetStack.footprintW - footprintW);
+    let localY = clamp(snap(y - targetStack.y), 0, targetStack.footprintD - footprintD);
+    ({ x: localX, y: localY } = snapTopperToSiblingEdges(targetStack, localX, localY, footprintW, footprintD));
+
+    const localRect = { x: localX, y: localY, w: footprintW, d: footprintD };
+
+    const existingTopper = targetStack.toppers.find(t =>
+      Math.abs(t.footprintW - footprintW) < 0.01 && Math.abs(t.footprintD - footprintD) < 0.01 &&
+      isMergeableOverlap(localRect, { x: t.dx, y: t.dy, w: t.footprintW, d: t.footprintD })
+    );
+    if (existingTopper) return { targetStack, mode: 'merge-topper', topper: existingTopper };
+
+    const collidesTopper = targetStack.toppers.some(t =>
+      rectsOverlap(localRect, { x: t.dx, y: t.dy, w: t.footprintW, d: t.footprintD })
+    );
+    if (collidesTopper) {
+      return { blocked: true, reason: 'That overlaps a unit already placed on top of this stack.' };
+    }
+
+    return { targetStack, mode: 'new-topper', localX, localY };
+  }
+
+  // Local-coordinate version of snapToNeighborEdges, scoped to one stack's top surface: snaps a
+  // new topper flush against sibling toppers already up there, or flush against the surface's own
+  // edges, so units can be butted up against each other precisely instead of needing a pixel-
+  // perfect drop.
+  function snapTopperToSiblingEdges(targetStack, x, y, w, d) {
+    const rects = targetStack.toppers.map(t => ({ x: t.dx, y: t.dy, w: t.footprintW, d: t.footprintD }));
+
+    let best = null;
+    const maxX = targetStack.footprintW - w;
+    const maxY = targetStack.footprintD - d;
+
+    rects.forEach(r => {
+      const vOverlap = Math.min(y + d, r.y + r.d) - Math.max(y, r.y);
+      if (vOverlap > 0) {
+        const dRight = Math.abs(x - (r.x + r.w));
+        if (dRight <= EDGE_SNAP_TOLERANCE_IN && (!best || dRight < best.dist)) best = { dist: dRight, x: r.x + r.w, y };
+        const dLeft = Math.abs((x + w) - r.x);
+        if (dLeft <= EDGE_SNAP_TOLERANCE_IN && (!best || dLeft < best.dist)) best = { dist: dLeft, x: r.x - w, y };
+      }
+      const hOverlap = Math.min(x + w, r.x + r.w) - Math.max(x, r.x);
+      if (hOverlap > 0) {
+        const dBelow = Math.abs(y - (r.y + r.d));
+        if (dBelow <= EDGE_SNAP_TOLERANCE_IN && (!best || dBelow < best.dist)) best = { dist: dBelow, x, y: r.y + r.d };
+        const dAbove = Math.abs((y + d) - r.y);
+        if (dAbove <= EDGE_SNAP_TOLERANCE_IN && (!best || dAbove < best.dist)) best = { dist: dAbove, x, y: r.y - d };
+      }
+    });
+
+    // Also snap flush against the surface's own edges.
+    if (Math.abs(x) <= EDGE_SNAP_TOLERANCE_IN && (!best || Math.abs(x) < best.dist)) best = { dist: Math.abs(x), x: 0, y };
+    if (Math.abs(x - maxX) <= EDGE_SNAP_TOLERANCE_IN && (!best || Math.abs(x - maxX) < best.dist)) best = { dist: Math.abs(x - maxX), x: maxX, y };
+    if (Math.abs(y) <= EDGE_SNAP_TOLERANCE_IN && (!best || Math.abs(y) < best.dist)) best = { dist: Math.abs(y), x, y: 0 };
+    if (Math.abs(y - maxY) <= EDGE_SNAP_TOLERANCE_IN && (!best || Math.abs(y - maxY) < best.dist)) best = { dist: Math.abs(y - maxY), x, y: maxY };
+
+    if (!best) return { x, y };
+    return { x: clamp(snap(best.x), 0, maxX), y: clamp(snap(best.y), 0, maxY) };
+  }
+
   function snap(value) {
     return Math.max(0, Math.round(value / SNAP_IN) * SNAP_IN);
   }
-
-  const EDGE_SNAP_TOLERANCE_IN = 2;
 
   // Axis-aligned rects of everything currently on the floor (ungrouped stacks, plus members of
   // any group that isn't meaningfully rotated), for edge-snapping. Ignores rotated groups --
@@ -836,6 +1029,43 @@ const Grid = (() => {
     return el;
   }
 
+  // A topper riding on a group member: rotates and translates rigidly with its parent stack. Its
+  // world center is the stack's world center plus the topper's own local offset (relative to the
+  // stack's center), rotated by the group's angle.
+  function buildGroupTopperEl(group, stack, stackWorldCenter, topper) {
+    const offsetX = topper.dx + topper.footprintW / 2 - stack.footprintW / 2;
+    const offsetY = topper.dy + topper.footprintD / 2 - stack.footprintD / 2;
+    const a = (group.angle * Math.PI) / 180;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    const worldCenter = {
+      x: stackWorldCenter.x + offsetX * cos - offsetY * sin,
+      y: stackWorldCenter.y + offsetX * sin + offsetY * cos
+    };
+
+    const el = document.createElement('div');
+    el.className = 'grid-stack grid-topper' + (isTopperSelected(stack.id, topper.id) ? ' selected' : '');
+    positionGroupMemberEl(el, { footprintW: topper.footprintW, footprintD: topper.footprintD }, worldCenter, group.angle);
+
+    applySwatchBackground(el, topper.items[topper.items.length - 1]);
+
+    const badge = document.createElement('span');
+    badge.className = 'stack-badge';
+    badge.textContent = topper.items.length > 1 ? `x${topper.items.length}` : '1';
+    el.appendChild(badge);
+
+    el.addEventListener('mousedown', (e) => e.stopPropagation());
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectedTopper = { stackId: stack.id, topperId: topper.id };
+      selectedStackId = null;
+      selectedGroupId = null;
+      multiSelectIds.clear();
+      render();
+    });
+
+    return el;
+  }
+
   function buildRotateHandleEl(group, members) {
     if (group.id !== selectedGroupId || members.length === 0) return null;
 
@@ -866,11 +1096,20 @@ const Grid = (() => {
   }
 
   function commitStackMove(stack, op) {
-    const { x, y } = snapToNeighborEdges(
-      snap(stack.x), snap(stack.y), stack.footprintW, stack.footprintD, stack.id
-    );
+    const rawX = snap(stack.x);
+    const rawY = snap(stack.y);
 
-    if (x < 0 || y < 0 || x + stack.footprintW > project.footprintWidth || y + stack.footprintD > project.footprintDepth) {
+    // Same ordering as handleDrop: try landing on a stackable target using the raw drop point
+    // before floor-level neighbor-edge-snapping can pull it off that target.
+    const placement = stack.toppers.length === 0
+      ? resolvePlacement(stack.footprintW, stack.footprintD, rawX, rawY, stack.id)
+      : null;
+
+    const { x, y } = placement
+      ? { x: rawX, y: rawY }
+      : snapToNeighborEdges(rawX, rawY, stack.footprintW, stack.footprintD, stack.id);
+
+    if (!placement && (x < 0 || y < 0 || x + stack.footprintW > project.footprintWidth || y + stack.footprintD > project.footprintDepth)) {
       stack.x = op.startX;
       stack.y = op.startY;
       alert('That placement goes outside the floor footprint. Reverted.');
@@ -878,21 +1117,49 @@ const Grid = (() => {
       return;
     }
 
-    const droppedRect = { x, y, w: stack.footprintW, d: stack.footprintD };
+    if (placement && placement.blocked) {
+      stack.x = op.startX;
+      stack.y = op.startY;
+      alert(placement.reason);
+      render();
+      return;
+    }
 
-    const sameFootprintOverlap = project.stacks.find(s =>
-      s.id !== stack.id && !s.groupId &&
-      Math.abs(s.footprintW - stack.footprintW) < 0.001 &&
-      Math.abs(s.footprintD - stack.footprintD) < 0.001 &&
-      isMergeableOverlap(droppedRect, { x: s.x, y: s.y, w: s.footprintW, d: s.footprintD })
-    );
-
-    if (sameFootprintOverlap) {
+    if (placement && placement.mode === 'base') {
       // Dropping onto a same-footprint stack merges into it, same as a fresh drag-drop from
       // the palette would -- lets you consolidate stacks by dragging one onto another.
-      sameFootprintOverlap.items.push(...stack.items);
+      placement.targetStack.items.push(...stack.items);
       project.stacks = project.stacks.filter(s => s.id !== stack.id);
-      if (selectedStackId === stack.id) selectedStackId = sameFootprintOverlap.id;
+      if (selectedStackId === stack.id) selectedStackId = placement.targetStack.id;
+      pushUndo(op.beforeSnapshot);
+      saveState(state);
+      render();
+      return;
+    }
+
+    if (placement && placement.mode === 'merge-topper') {
+      placement.topper.items.push(...stack.items);
+      project.stacks = project.stacks.filter(s => s.id !== stack.id);
+      selectedTopper = { stackId: placement.targetStack.id, topperId: placement.topper.id };
+      if (selectedStackId === stack.id) selectedStackId = null;
+      pushUndo(op.beforeSnapshot);
+      saveState(state);
+      render();
+      return;
+    }
+
+    if (placement && placement.mode === 'new-topper') {
+      placement.targetStack.toppers.push({
+        id: uid('topper'),
+        dx: placement.localX,
+        dy: placement.localY,
+        footprintW: stack.footprintW, footprintD: stack.footprintD,
+        items: stack.items
+      });
+      project.stacks = project.stacks.filter(s => s.id !== stack.id);
+      const newTopper = placement.targetStack.toppers[placement.targetStack.toppers.length - 1];
+      selectedTopper = { stackId: placement.targetStack.id, topperId: newTopper.id };
+      if (selectedStackId === stack.id) selectedStackId = null;
       pushUndo(op.beforeSnapshot);
       saveState(state);
       render();
@@ -1069,6 +1336,16 @@ const Grid = (() => {
       return;
     }
 
+    if (selectedTopper) {
+      const stack = project.stacks.find(s => s.id === selectedTopper.stackId);
+      const topper = stack && stack.toppers.find(t => t.id === selectedTopper.topperId);
+      if (stack && topper) {
+        renderTopperPanel(panel, stack, topper);
+        return;
+      }
+      selectedTopper = null;
+    }
+
     const stack = project.stacks.find(s => s.id === selectedStackId && !s.groupId);
     if (!stack) {
       panel.innerHTML = '<p class="empty-state">Click a stack on the floor to manage it. Shift+click multiple stacks to group them.</p>';
@@ -1194,6 +1471,8 @@ const Grid = (() => {
       itemsList.appendChild(row);
     });
 
+    const hasToppers = stack.toppers.length > 0;
+
     const btnRow = document.createElement('div');
     btnRow.className = 'form-actions';
 
@@ -1201,6 +1480,8 @@ const Grid = (() => {
     removeTopBtn.type = 'button';
     removeTopBtn.className = 'btn-secondary';
     removeTopBtn.textContent = 'Remove top item';
+    removeTopBtn.disabled = hasToppers && stack.items.length === 1;
+    removeTopBtn.title = removeTopBtn.disabled ? 'Remove the units on top of this stack first.' : '';
     removeTopBtn.addEventListener('click', () => {
       pushUndo(snapshotProject());
       stack.items.pop();
@@ -1217,7 +1498,10 @@ const Grid = (() => {
     deleteStackBtn.className = 'btn-danger';
     deleteStackBtn.textContent = 'Delete entire stack';
     deleteStackBtn.addEventListener('click', () => {
-      if (!confirm('Remove this entire stack from the floor?')) return;
+      const msg = hasToppers
+        ? 'This will also remove everything stacked on top of it. Continue?'
+        : 'Remove this entire stack from the floor?';
+      if (!confirm(msg)) return;
       pushUndo(snapshotProject());
       project.stacks = project.stacks.filter(s => s.id !== stack.id);
       selectedStackId = null;
@@ -1232,18 +1516,130 @@ const Grid = (() => {
     detail.appendChild(dimRow);
     detail.appendChild(countRow);
     detail.appendChild(itemsList);
+
+    if (hasToppers) {
+      const toppersHeader = document.createElement('div');
+      toppersHeader.className = 'sel-row';
+      toppersHeader.innerHTML = `<span>On top of this stack</span><strong>${stack.toppers.length} item(s)</strong>`;
+      detail.appendChild(toppersHeader);
+
+      const toppersList = document.createElement('div');
+      toppersList.className = 'selection-items';
+      stack.toppers.forEach(topper => {
+        const topItem = topper.items[topper.items.length - 1];
+        const it = ItemTypes.getItemType(topItem.itemTypeId);
+        const sw = resolveSwatch(topItem.itemTypeId, topItem.swatchId);
+        const label = topItem.kind === 'case'
+          ? (Cases.getCase(topItem.caseId) || {}).name || 'Case'
+          : `${it ? it.name : '?'} - ${sw ? sw.name : '?'} (unit)`;
+        const row = document.createElement('div');
+        row.className = 'sel-item-row';
+        row.style.cursor = 'pointer';
+        row.innerHTML = `<span>${label}${topper.items.length > 1 ? ` x${topper.items.length}` : ''}</span>`;
+        row.addEventListener('click', () => {
+          selectedTopper = { stackId: stack.id, topperId: topper.id };
+          selectedStackId = null;
+          render();
+        });
+        toppersList.appendChild(row);
+      });
+      detail.appendChild(toppersList);
+    }
+
+    detail.appendChild(btnRow);
+    panel.appendChild(detail);
+  }
+
+  function renderTopperPanel(panel, stack, topper) {
+    const detail = document.createElement('div');
+    detail.className = 'selection-detail';
+
+    const parentRow = document.createElement('div');
+    parentRow.className = 'sel-row';
+    parentRow.innerHTML = `<span>Resting on</span><strong>${stack.footprintW.toFixed(1)}"x${stack.footprintD.toFixed(1)}" stack</strong>`;
+
+    const dimRow = document.createElement('div');
+    dimRow.className = 'sel-row';
+    dimRow.innerHTML = `<span>Footprint</span><strong>${topper.footprintW.toFixed(1)}"x${topper.footprintD.toFixed(1)}"</strong>`;
+
+    const countRow = document.createElement('div');
+    countRow.className = 'sel-row';
+    countRow.innerHTML = `<span>Items stacked</span><strong>${topper.items.length}</strong>`;
+
+    const itemsList = document.createElement('div');
+    itemsList.className = 'selection-items';
+    topper.items.forEach((item, idx) => {
+      const it = ItemTypes.getItemType(item.itemTypeId);
+      const sw = resolveSwatch(item.itemTypeId, item.swatchId);
+      const row = document.createElement('div');
+      row.className = 'sel-item-row';
+      const label = item.kind === 'case'
+        ? (Cases.getCase(item.caseId) || {}).name || 'Case'
+        : `${it ? it.name : '?'} - ${sw ? sw.name : '?'} (unit)`;
+      row.innerHTML = `<span>${idx + 1}. ${label}</span>`;
+      itemsList.appendChild(row);
+    });
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'form-actions';
+
+    const removeTopBtn = document.createElement('button');
+    removeTopBtn.type = 'button';
+    removeTopBtn.className = 'btn-secondary';
+    removeTopBtn.textContent = 'Remove top item';
+    removeTopBtn.addEventListener('click', () => {
+      pushUndo(snapshotProject());
+      topper.items.pop();
+      if (topper.items.length === 0) {
+        stack.toppers = stack.toppers.filter(t => t.id !== topper.id);
+        selectedTopper = null;
+      }
+      saveState(state);
+      render();
+    });
+
+    const deleteTopperBtn = document.createElement('button');
+    deleteTopperBtn.type = 'button';
+    deleteTopperBtn.className = 'btn-danger';
+    deleteTopperBtn.textContent = 'Remove from stack';
+    deleteTopperBtn.addEventListener('click', () => {
+      if (!confirm('Remove this item from the top of the stack?')) return;
+      pushUndo(snapshotProject());
+      stack.toppers = stack.toppers.filter(t => t.id !== topper.id);
+      selectedTopper = null;
+      saveState(state);
+      render();
+    });
+
+    btnRow.appendChild(removeTopBtn);
+    btnRow.appendChild(deleteTopperBtn);
+
+    detail.appendChild(parentRow);
+    detail.appendChild(dimRow);
+    detail.appendChild(countRow);
+    detail.appendChild(itemsList);
     detail.appendChild(btnRow);
     panel.appendChild(detail);
   }
 
   // ---- Tally ----
 
+  // Every placed item across the floor -- each stack's base column plus everything resting on
+  // top of it as a topper.
+  function getAllPlacedItems() {
+    const items = [];
+    project.stacks.forEach(stack => {
+      items.push(...stack.items);
+      (stack.toppers || []).forEach(topper => items.push(...topper.items));
+    });
+    return items;
+  }
+
   function computeTally() {
     const rows = {};
 
-    project.stacks.forEach(stack => {
-      stack.items.forEach(item => {
-        let key, label, isCase, unitCost, unitRevenue;
+    getAllPlacedItems().forEach(item => {
+      let key, label, isCase, unitCost, unitRevenue;
 
         if (item.kind === 'case') {
           const c = Cases.getCase(item.caseId);
@@ -1286,11 +1682,10 @@ const Grid = (() => {
           }
         }
 
-        if (!rows[key]) rows[key] = { label, isCase, count: 0, cost: 0, revenue: 0 };
-        rows[key].count += 1;
-        rows[key].cost += unitCost;
-        rows[key].revenue += unitRevenue;
-      });
+      if (!rows[key]) rows[key] = { label, isCase, count: 0, cost: 0, revenue: 0 };
+      rows[key].count += 1;
+      rows[key].cost += unitCost;
+      rows[key].revenue += unitRevenue;
     });
 
     return Object.values(rows);

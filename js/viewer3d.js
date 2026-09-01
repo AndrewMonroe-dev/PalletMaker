@@ -136,16 +136,41 @@ const Viewer3D = (() => {
   }
 
   function addStackMeshes(stack, centerGridX, centerGridY, angleDeg) {
-    let yCursor = 0;
-    stack.items.forEach(item => {
+    const baseHeight = addItemColumn(stack.items, centerGridX, centerGridY, angleDeg, 0, stack.footprintW, stack.footprintD);
+
+    // Toppers sit on top of the base column, offset within the stack's own footprint and rotated
+    // rigidly with it -- same transform used for their 2D counterpart in grid.js.
+    (stack.toppers || []).forEach(topper => {
+      const offsetX = topper.dx + topper.footprintW / 2 - stack.footprintW / 2;
+      const offsetY = topper.dy + topper.footprintD / 2 - stack.footprintD / 2;
+      const a = (angleDeg * Math.PI) / 180;
+      const cos = Math.cos(a), sin = Math.sin(a);
+      const topperCenterX = centerGridX + offsetX * cos - offsetY * sin;
+      const topperCenterY = centerGridY + offsetX * sin + offsetY * cos;
+      addItemColumn(topper.items, topperCenterX, topperCenterY, angleDeg, baseHeight, topper.footprintW, topper.footprintD);
+    });
+  }
+
+  // Renders one vertically-stacked column of items (a stack's base, or a topper's own pile)
+  // starting at startHeight, each box at its own real footprint centered on the column. Returns
+  // the height the column reached, so a caller can stack something else on top of it.
+  function addItemColumn(items, centerGridX, centerGridY, angleDeg, startHeight, fallbackW, fallbackD) {
+    let yCursor = startHeight;
+    items.forEach(item => {
       const itemHeight = getItemHeight(item);
+      // Each item renders at its own real footprint (centered on the column), not the column's
+      // base footprint -- a unit stacked on a case should look like a unit, not stretch to the
+      // case's width/depth. Falls back to the column's own footprint if the item's type/case was
+      // since deleted (matches the "missing" handling elsewhere).
+      const footprint = getItemFootprint(item) || { w: fallbackW, d: fallbackD };
       const sw = Grid.resolveSwatch(item.itemTypeId, item.swatchId);
-      const box = buildBoxMesh(stack.footprintW, itemHeight, stack.footprintD, sw);
+      const box = buildBoxMesh(footprint.w, itemHeight, footprint.d, sw);
       box.position.set(toSceneX(centerGridX), yCursor + itemHeight / 2, toSceneZ(centerGridY));
       box.rotation.y = -(angleDeg * Math.PI) / 180;
       scene.add(box);
       yCursor += itemHeight;
     });
+    return yCursor;
   }
 
   function getItemHeight(item) {
@@ -156,6 +181,16 @@ const Viewer3D = (() => {
     }
     const it = ItemTypes.getItemType(item.itemTypeId);
     return it ? it.height : 1;
+  }
+
+  function getItemFootprint(item) {
+    if (item.kind === 'case') {
+      const c = Cases.getCase(item.caseId);
+      const it = c ? ItemTypes.getItemType(c.itemTypeId) : null;
+      return (c && it) ? { w: c.cols * it.width, d: c.layers * it.depth } : null;
+    }
+    const it = ItemTypes.getItemType(item.itemTypeId);
+    return it ? { w: it.width, d: it.depth } : null;
   }
 
   function buildBoxMesh(width, height, depth, sw) {
@@ -321,12 +356,22 @@ const Viewer3D = (() => {
 
   // ---- Cost/revenue summary ----
 
+  // Every placed item across the floor -- each stack's base column plus everything resting on
+  // top of it as a topper.
+  function getAllPlacedItems() {
+    const items = [];
+    project.stacks.forEach(stack => {
+      items.push(...stack.items);
+      (stack.toppers || []).forEach(topper => items.push(...topper.items));
+    });
+    return items;
+  }
+
   function computeTotals() {
     let totalCost = 0, totalRevenue = 0, totalCases = 0, totalUnits = 0;
 
-    project.stacks.forEach(stack => {
-      stack.items.forEach(item => {
-        if (item.kind === 'case') {
+    getAllPlacedItems().forEach(item => {
+      if (item.kind === 'case') {
           const c = Cases.getCase(item.caseId);
           const it = c ? ItemTypes.getItemType(c.itemTypeId) : null;
           if (c && it) {
@@ -339,18 +384,17 @@ const Viewer3D = (() => {
             totalCases += 1;
             totalUnits += unitsInCase;
           }
-        } else {
-          const it = ItemTypes.getItemType(item.itemTypeId);
-          if (it) {
-            const costPerUnit = it.unitsPerCase > 0 ? it.costPerCase / it.unitsPerCase : 0;
-            const marginFraction = Math.min(Math.max(it.marginPct, 0), 99.99) / 100;
-            const retailPerUnit = marginFraction < 1 ? costPerUnit / (1 - marginFraction) : 0;
-            totalCost += costPerUnit;
-            totalRevenue += retailPerUnit;
-            totalUnits += 1;
-          }
+      } else {
+        const it = ItemTypes.getItemType(item.itemTypeId);
+        if (it) {
+          const costPerUnit = it.unitsPerCase > 0 ? it.costPerCase / it.unitsPerCase : 0;
+          const marginFraction = Math.min(Math.max(it.marginPct, 0), 99.99) / 100;
+          const retailPerUnit = marginFraction < 1 ? costPerUnit / (1 - marginFraction) : 0;
+          totalCost += costPerUnit;
+          totalRevenue += retailPerUnit;
+          totalUnits += 1;
         }
-      });
+      }
     });
 
     return { totalCost, totalRevenue, totalCases, totalUnits };
