@@ -602,8 +602,14 @@ const Grid = (() => {
     render();
   }
 
+  // COLLISION_EPSILON absorbs floating-point drift (e.g. 4 * 3.4 doesn't land on the exact same
+  // bit pattern as 2 + 13.6) so two rects meant to sit exactly flush -- computed via different
+  // arithmetic paths -- don't get flagged as overlapping by a sub-thousandth-inch sliver.
+  const COLLISION_EPSILON = 1e-6;
+
   function rectsOverlap(a, b) {
-    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.d && a.y + a.d > b.y;
+    return a.x < b.x + b.w - COLLISION_EPSILON && a.x + a.w > b.x + COLLISION_EPSILON &&
+      a.y < b.y + b.d - COLLISION_EPSILON && a.y + a.d > b.y + COLLISION_EPSILON;
   }
 
   function clamp(v, lo, hi) {
@@ -693,7 +699,11 @@ const Grid = (() => {
   function snapTopperToSiblingEdges(targetStack, x, y, w, d) {
     const rects = targetStack.toppers.map(t => ({ x: t.dx, y: t.dy, w: t.footprintW, d: t.footprintD }));
 
-    let best = null;
+    // X and Y snapping are tracked independently -- see snapToNeighborEdges for why a shared
+    // "closest wins" candidate is wrong (an item already flush on one axis has distance 0 there,
+    // which would always beat a genuinely useful snap on the other axis).
+    let bestX = null;
+    let bestY = null;
     const maxX = targetStack.footprintW - w;
     const maxY = targetStack.footprintD - d;
 
@@ -701,27 +711,32 @@ const Grid = (() => {
       const vOverlap = Math.min(y + d, r.y + r.d) - Math.max(y, r.y);
       if (vOverlap > 0) {
         const dRight = Math.abs(x - (r.x + r.w));
-        if (dRight <= EDGE_SNAP_TOLERANCE_IN && (!best || dRight < best.dist)) best = { dist: dRight, x: r.x + r.w, y };
+        if (dRight <= EDGE_SNAP_TOLERANCE_IN && (!bestX || dRight < bestX.dist)) bestX = { dist: dRight, value: r.x + r.w };
         const dLeft = Math.abs((x + w) - r.x);
-        if (dLeft <= EDGE_SNAP_TOLERANCE_IN && (!best || dLeft < best.dist)) best = { dist: dLeft, x: r.x - w, y };
+        if (dLeft <= EDGE_SNAP_TOLERANCE_IN && (!bestX || dLeft < bestX.dist)) bestX = { dist: dLeft, value: r.x - w };
       }
       const hOverlap = Math.min(x + w, r.x + r.w) - Math.max(x, r.x);
       if (hOverlap > 0) {
         const dBelow = Math.abs(y - (r.y + r.d));
-        if (dBelow <= EDGE_SNAP_TOLERANCE_IN && (!best || dBelow < best.dist)) best = { dist: dBelow, x, y: r.y + r.d };
+        if (dBelow <= EDGE_SNAP_TOLERANCE_IN && (!bestY || dBelow < bestY.dist)) bestY = { dist: dBelow, value: r.y + r.d };
         const dAbove = Math.abs((y + d) - r.y);
-        if (dAbove <= EDGE_SNAP_TOLERANCE_IN && (!best || dAbove < best.dist)) best = { dist: dAbove, x, y: r.y - d };
+        if (dAbove <= EDGE_SNAP_TOLERANCE_IN && (!bestY || dAbove < bestY.dist)) bestY = { dist: dAbove, value: r.y - d };
       }
     });
 
     // Also snap flush against the surface's own edges.
-    if (Math.abs(x) <= EDGE_SNAP_TOLERANCE_IN && (!best || Math.abs(x) < best.dist)) best = { dist: Math.abs(x), x: 0, y };
-    if (Math.abs(x - maxX) <= EDGE_SNAP_TOLERANCE_IN && (!best || Math.abs(x - maxX) < best.dist)) best = { dist: Math.abs(x - maxX), x: maxX, y };
-    if (Math.abs(y) <= EDGE_SNAP_TOLERANCE_IN && (!best || Math.abs(y) < best.dist)) best = { dist: Math.abs(y), x, y: 0 };
-    if (Math.abs(y - maxY) <= EDGE_SNAP_TOLERANCE_IN && (!best || Math.abs(y - maxY) < best.dist)) best = { dist: Math.abs(y - maxY), x, y: maxY };
+    if (Math.abs(x) <= EDGE_SNAP_TOLERANCE_IN && (!bestX || Math.abs(x) < bestX.dist)) bestX = { dist: Math.abs(x), value: 0 };
+    if (Math.abs(x - maxX) <= EDGE_SNAP_TOLERANCE_IN && (!bestX || Math.abs(x - maxX) < bestX.dist)) bestX = { dist: Math.abs(x - maxX), value: maxX };
+    if (Math.abs(y) <= EDGE_SNAP_TOLERANCE_IN && (!bestY || Math.abs(y) < bestY.dist)) bestY = { dist: Math.abs(y), value: 0 };
+    if (Math.abs(y - maxY) <= EDGE_SNAP_TOLERANCE_IN && (!bestY || Math.abs(y - maxY) < bestY.dist)) bestY = { dist: Math.abs(y - maxY), value: maxY };
 
-    if (!best) return { x, y };
-    return { x: clamp(snap(best.x), 0, maxX), y: clamp(snap(best.y), 0, maxY) };
+    // bestX/bestY are already the exact flush coordinate -- re-snapping to the 1in grid would
+    // reopen the gap just closed (or push it into a slight overlap) whenever real item dimensions
+    // aren't whole inches. Still clamp for float-precision safety at the surface's own edges.
+    return {
+      x: clamp(bestX ? bestX.value : x, 0, maxX),
+      y: clamp(bestY ? bestY.value : y, 0, maxY)
+    };
   }
 
   function snap(value) {
@@ -754,38 +769,47 @@ const Grid = (() => {
 
   // If (x,y) is close to sitting flush against a neighbor's edge but not exactly on it, snap it
   // there -- turns "aimed close but missed by an inch" into a clean adjacent placement instead
-  // of a rejected near-overlap or an awkward gap.
+  // of a rejected near-overlap or an awkward gap. X and Y snapping are tracked independently
+  // (not one shared "closest wins" candidate) -- an item already flush on one axis has distance
+  // 0 there, which would otherwise always beat a genuinely useful snap on the other axis and
+  // silently discard it.
   function snapToNeighborEdges(x, y, w, d, excludeStackId) {
     const rects = collectAxisAlignedRects(excludeStackId);
-    let best = null;
+    let bestX = null;
+    let bestY = null;
 
     rects.forEach(r => {
       const vOverlap = Math.min(y + d, r.y + r.d) - Math.max(y, r.y);
       if (vOverlap > 0) {
         const dRight = Math.abs(x - (r.x + r.w));
-        if (dRight <= EDGE_SNAP_TOLERANCE_IN && (!best || dRight < best.dist)) {
-          best = { dist: dRight, x: r.x + r.w, y };
+        if (dRight <= EDGE_SNAP_TOLERANCE_IN && (!bestX || dRight < bestX.dist)) {
+          bestX = { dist: dRight, value: r.x + r.w };
         }
         const dLeft = Math.abs((x + w) - r.x);
-        if (dLeft <= EDGE_SNAP_TOLERANCE_IN && (!best || dLeft < best.dist)) {
-          best = { dist: dLeft, x: r.x - w, y };
+        if (dLeft <= EDGE_SNAP_TOLERANCE_IN && (!bestX || dLeft < bestX.dist)) {
+          bestX = { dist: dLeft, value: r.x - w };
         }
       }
       const hOverlap = Math.min(x + w, r.x + r.w) - Math.max(x, r.x);
       if (hOverlap > 0) {
         const dBelow = Math.abs(y - (r.y + r.d));
-        if (dBelow <= EDGE_SNAP_TOLERANCE_IN && (!best || dBelow < best.dist)) {
-          best = { dist: dBelow, x, y: r.y + r.d };
+        if (dBelow <= EDGE_SNAP_TOLERANCE_IN && (!bestY || dBelow < bestY.dist)) {
+          bestY = { dist: dBelow, value: r.y + r.d };
         }
         const dAbove = Math.abs((y + d) - r.y);
-        if (dAbove <= EDGE_SNAP_TOLERANCE_IN && (!best || dAbove < best.dist)) {
-          best = { dist: dAbove, x, y: r.y - d };
+        if (dAbove <= EDGE_SNAP_TOLERANCE_IN && (!bestY || dAbove < bestY.dist)) {
+          bestY = { dist: dAbove, value: r.y - d };
         }
       }
     });
 
-    if (!best) return { x, y };
-    return { x: snap(best.x), y: snap(best.y) };
+    // bestX/bestY are already the exact flush-against-the-neighbor coordinate -- re-snapping to
+    // the 1in grid here would reintroduce the gap (or overlap) this function exists to close,
+    // whenever real item dimensions aren't whole inches.
+    return {
+      x: bestX ? bestX.value : x,
+      y: bestY ? bestY.value : y
+    };
   }
 
   // ---- Oriented rectangle geometry (used once anything is part of a rotated group) ----
@@ -828,7 +852,9 @@ const Grid = (() => {
     return axes.every(axis => {
       const pa = project1D(cornersA, axis);
       const pb = project1D(cornersB, axis);
-      return pa.max > pb.min && pb.max > pa.min;
+      // See COLLISION_EPSILON above -- two rects meant to sit exactly flush shouldn't register
+      // as colliding over a sub-thousandth-inch of float drift.
+      return pa.max > pb.min + COLLISION_EPSILON && pb.max > pa.min + COLLISION_EPSILON;
     });
   }
 
