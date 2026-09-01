@@ -385,15 +385,16 @@ const Grid = (() => {
     return chip;
   }
 
-  // A small, offscreen element shaped like the dragged item's real footprint (width:depth
-  // proportion, capped to a reasonable on-screen size), used as the native drag image so the
-  // cursor carries just the product's shape/color instead of the whole palette chip.
+  // A small, offscreen element shaped like the dragged item's real footprint, used as the native
+  // drag image so the cursor carries just the product's shape/color instead of the whole palette
+  // chip. Sized using the grid's own current px-per-inch scale (not some independently-chosen
+  // display size) so it matches the item's actual on-canvas size 1:1 -- otherwise it reads as
+  // bigger or smaller than the real thing and makes it hard to judge where it'll actually land.
+  // Flat swatch color only, no photo -- a tiny offscreen ghost isn't the place for image detail.
   function buildDragGhostEl(payload) {
-    const MAX_PX = 60;
-    const MIN_PX = 16;
-    const scaleFactor = MAX_PX / Math.max(payload.footprintW, payload.footprintD);
-    const w = Math.max(MIN_PX, payload.footprintW * scaleFactor);
-    const d = Math.max(MIN_PX, payload.footprintD * scaleFactor);
+    const MIN_PX = 4; // stay visible even for a tiny item on a very zoomed-out floor
+    const w = Math.max(MIN_PX, payload.footprintW * scale);
+    const d = Math.max(MIN_PX, payload.footprintD * scale);
 
     const el = document.createElement('div');
     el.style.position = 'fixed';
@@ -401,13 +402,8 @@ const Grid = (() => {
     el.style.left = '-1000px';
     el.style.width = `${w}px`;
     el.style.height = `${d}px`;
-    el.style.borderRadius = '3px';
     el.style.border = '1px solid rgba(255,255,255,0.5)';
-    if (payload.swatch) {
-      el.style.background = payload.swatch.image
-        ? `url(${payload.swatch.image}) center/cover`
-        : payload.swatch.color;
-    }
+    el.style.background = (payload.swatch && payload.swatch.color) || '#888888';
     document.body.appendChild(el);
     return { el, w, d };
   }
