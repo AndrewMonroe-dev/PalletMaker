@@ -70,6 +70,9 @@ const ItemTypes = (() => {
 
     for (const file of images) {
       const dataUrl = await readFileAsDataUrl(file);
+      // Sampled once here at creation time and cached on the swatch -- the grid then reads
+      // avgColor directly instead of decoding/painting the full photo on every render.
+      const avgColor = await computeAverageColorFromDataUrl(dataUrl);
       const name = file.name.replace(/\.[^./\\]+$/, '') || 'New Item';
       state.itemTypes.push({
         id: uid('item'),
@@ -79,7 +82,7 @@ const ItemTypes = (() => {
         // in. 1x1x1 rather than 0 so it renders as a real (if tiny) box if placed before editing.
         width: 1, height: 1, depth: 1,
         unitsPerCase: 1, costPerCase: 0, marginPct: 30,
-        palette: [{ id: uid('swatch'), name: 'Main', color: '#8b1e2b', image: dataUrl, sideImage: null, backImage: null }]
+        palette: [{ id: uid('swatch'), name: 'Main', color: '#8b1e2b', image: dataUrl, sideImage: null, backImage: null, avgColor }]
       });
     }
 
@@ -422,12 +425,15 @@ const ItemTypes = (() => {
       readFileAsDataUrl(sideImageInput.files[0]),
       readFileAsDataUrl(backImageInput.files[0])
     ]);
+    // Sampled once here at creation time and cached on the swatch -- the grid then reads
+    // avgColor directly instead of decoding/painting the full photo on every render.
+    const avgColor = await computeAverageColorFromDataUrl(image);
 
     editingSwatches.push({
       id: uid('swatch'),
       name,
       color: colorInput.value,
-      image, sideImage, backImage
+      image, sideImage, backImage, avgColor
     });
     renderSwatchEditor();
     nameInput.value = '';
@@ -497,14 +503,18 @@ const ItemTypes = (() => {
 
   // Lets other tabs (e.g. Cases) add a new palette color to an item type without navigating
   // away to the Item Types tab first.
-  function addSwatchToItemType(itemTypeId, { name, color, image, sideImage, backImage }) {
+  async function addSwatchToItemType(itemTypeId, { name, color, image, sideImage, backImage }) {
     const item = getItemType(itemTypeId);
     if (!item) return null;
+    // Sampled once here at creation time and cached on the swatch -- the grid then reads
+    // avgColor directly instead of decoding/painting the full photo on every render.
+    const avgColor = image ? await computeAverageColorFromDataUrl(image) : null;
     const swatch = {
       id: uid('swatch'), name, color,
       image: image || null,
       sideImage: sideImage || null,
-      backImage: backImage || null
+      backImage: backImage || null,
+      avgColor
     };
     item.palette.push(swatch);
     saveState(state);

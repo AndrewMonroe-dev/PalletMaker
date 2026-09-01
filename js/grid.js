@@ -545,6 +545,33 @@ const Grid = (() => {
     return el;
   }
 
+  // Placing a case on the grid is a flat-colored box now, not its actual photo -- decoding and
+  // painting a full-resolution image for every dropped box (potentially dozens at once, each
+  // re-painted on every render()) was the real cost behind Andrew's reported ~5s render lag on a
+  // drop. `swatch.avgColor` is a predominant-color sample cached once at swatch-creation time
+  // (itemTypes.js/cases.js, via storage.js's computeAverageColorFromDataUrl) -- reading it here is
+  // just a property lookup, no decode cost at all. Swatches created before this change won't have
+  // it yet; those get a one-time async backfill below rather than falling back to the image.
+  const avgColorBackfillPending = new Set();
+  function getGridBackground(sw) {
+    if (!sw.image) return sw.color;
+    if (sw.avgColor) return sw.avgColor;
+    if (!avgColorBackfillPending.has(sw.id)) {
+      avgColorBackfillPending.add(sw.id);
+      computeAverageColorFromDataUrl(sw.image).then(avgColor => {
+        avgColorBackfillPending.delete(sw.id);
+        if (avgColor) {
+          sw.avgColor = avgColor;
+          saveState(state);
+          render();
+        }
+      });
+    }
+    // Instant placeholder while the backfill above resolves -- still zero decode cost, just not
+    // yet the real predominant color for this one swatch's first render after upgrading.
+    return sw.color;
+  }
+
   function isTopperSelected(stackId, topperId) {
     return !!selectedTopper && selectedTopper.stackId === stackId && selectedTopper.topperId === topperId;
   }
@@ -552,7 +579,7 @@ const Grid = (() => {
   function applySwatchBackground(el, topItem) {
     const sw = resolveSwatch(topItem.itemTypeId, topItem.swatchId);
     if (sw) {
-      el.style.background = sw.image ? `url(${sw.image}) center/cover` : sw.color;
+      el.style.background = getGridBackground(sw);
       // The `background` shorthand above resets background-origin back to its default
       // (padding-box), silently undoing the CSS rule that makes the image reach the box's real
       // border -- set it explicitly every time so this can't regress if padding ever comes back.

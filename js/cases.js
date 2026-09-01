@@ -149,7 +149,7 @@ const Cases = (() => {
       readFileAsDataUrl(backImageInput.files[0])
     ]);
 
-    const swatch = ItemTypes.addSwatchToItemType(itemTypeId, {
+    const swatch = await ItemTypes.addSwatchToItemType(itemTypeId, {
       name, color: colorInput.value, image, sideImage, backImage
     });
     populateSwatchOptions(swatch.id);

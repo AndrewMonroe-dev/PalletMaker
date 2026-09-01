@@ -47,6 +47,38 @@ function readFileAsDataUrl(file) {
   });
 }
 
+// Samples a photo's average color (16x16 offscreen canvas downsample) so it can be cached on a
+// swatch as a cheap flat-color stand-in for its actual image -- viewer3d.js already did this same
+// sampling per-mesh-build for its own fallback-face color; this is the same math, just taking a
+// data URL directly (no live <img> element required) so it can run once at swatch-creation time
+// and be persisted, instead of every render.
+function computeAverageColorFromDataUrl(dataUrl) {
+  return new Promise((resolve) => {
+    if (!dataUrl) { resolve(null); return; }
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const size = 16;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, size, size);
+        const data = ctx.getImageData(0, 0, size, size).data;
+        let r = 0, g = 0, b = 0, count = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
+        }
+        resolve(`rgb(${Math.round(r / count)}, ${Math.round(g / count)}, ${Math.round(b / count)})`);
+      } catch (e) {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')
