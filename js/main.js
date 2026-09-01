@@ -57,6 +57,55 @@
   btnChoose.addEventListener('click', () => FileSync.chooseFile().then(() => FileSync.write(appState)));
   btnReconnect.addEventListener('click', () => FileSync.reconnect().then(() => FileSync.write(appState)));
 
+  // ---- Recompress already-saved photos (retroactive version of the new-upload downscaling) ----
+  // Andrew's real catalog already had photos stored at full original resolution from before that
+  // fix existed -- this is the one-time migration for that existing data, run on demand rather
+  // than automatically on load (touching every image silently on every visit would be surprising,
+  // and isn't needed once a catalog's photos are already small).
+  document.getElementById('btnRecompressPhotos').addEventListener('click', async () => {
+    if (!confirm('Re-compress every already-saved photo to a smaller size? Recommended if the app has felt slow or a save has failed -- large original photos are the likely cause. This can take a moment for a big catalog, and photos that are already small are left alone.')) {
+      return;
+    }
+    let imagesProcessed = 0;
+    let swatchesTouched = 0;
+    let skippedAlreadySmall = 0;
+    // A dataUrl under ~200KB is already close to what downscaleImageDataUrl itself produces --
+    // skip it rather than re-compressing an already-small (possibly already-JPEG) image, since
+    // JPEG re-encoding loses a little quality each time it's applied.
+    const ALREADY_SMALL_THRESHOLD = 200_000;
+    async function recompressField(value) {
+      if (!value || value.length < ALREADY_SMALL_THRESHOLD) {
+        if (value) skippedAlreadySmall++;
+        return { value, changed: false };
+      }
+      imagesProcessed++;
+      return { value: await downscaleImageDataUrl(value), changed: true };
+    }
+    for (const it of appState.itemTypes) {
+      for (const sw of it.palette) {
+        const image = await recompressField(sw.image);
+        const sideImage = await recompressField(sw.sideImage);
+        const backImage = await recompressField(sw.backImage);
+        if (image.changed || sideImage.changed || backImage.changed) {
+          sw.image = image.value;
+          sw.sideImage = sideImage.value;
+          sw.backImage = backImage.value;
+          // The cached predominant color was sampled from the old (larger) image -- resample from
+          // the new one so it stays accurate rather than silently going stale.
+          sw.avgColor = sw.image ? await computeAverageColorFromDataUrl(sw.image) : null;
+          swatchesTouched++;
+        }
+      }
+    }
+    saveState(appState);
+    ItemTypes.refresh();
+    Cases.refresh();
+    Grid.refresh();
+    alert(imagesProcessed > 0
+      ? `Recompressed ${imagesProcessed} photo${imagesProcessed === 1 ? '' : 's'} across ${swatchesTouched} swatch${swatchesTouched === 1 ? '' : 'es'}. ${skippedAlreadySmall} photo${skippedAlreadySmall === 1 ? '' : 's'} ${skippedAlreadySmall === 1 ? 'was' : 'were'} already small enough and left alone.`
+      : `Nothing to recompress -- every photo (${skippedAlreadySmall}) is already a small size.`);
+  });
+
   // ---- Full backup / restore (everything: item types, cases, every project) ----
   // Distinct from the Grid tab's own Export/Import JSON, which only covers the single active
   // project -- this is a complete snapshot of appState, so a lost/corrupted localStorage never
