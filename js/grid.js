@@ -12,6 +12,12 @@ const Grid = (() => {
   const MERGE_OVERLAP_FRACTION = 0.8; // how much of the footprint must overlap to count as "landed on it" and merge
   const EDGE_SNAP_TOLERANCE_IN = 2;
 
+  // A 1x1 transparent gif, used as a blank native drag image -- the snapped live preview drawn on
+  // the canvas during dragover is the only "where will this land" indicator; the cursor itself
+  // doesn't need its own second box.
+  const BLANK_DRAG_IMAGE = new Image();
+  BLANK_DRAG_IMAGE.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
   let state = null;
   let project = null;
   let scale = 1; // px per inch
@@ -369,13 +375,12 @@ const Grid = (() => {
       dragPreviewPayload = payload;
 
       // The browser's default drag image is a screenshot of the whole chip -- swatch, name, and
-      // dimensions text. Swap it for a small ghost that's just the item's own shape (its real
-      // width:depth aspect ratio, not the fixed little swatch square), so what follows the
-      // cursor actually reads as "the product," not a caption card.
-      const ghost = buildDragGhostEl(payload);
-      e.dataTransfer.setDragImage(ghost.el, ghost.w / 2, ghost.d / 2);
-      // setDragImage snapshots synchronously; safe to clean up on the next tick.
-      setTimeout(() => ghost.el.remove(), 0);
+      // dimensions text. A same-size colored box following the cursor turned out to be its own
+      // problem too: once it's over the canvas, the live snapped drop preview (updateDragPreview)
+      // renders right next to it, and two boxes on screen at once reads as confusing rather than
+      // helpful. Blank the drag image out entirely instead -- the snapped preview on the canvas is
+      // the single source of truth for where/how big it'll land.
+      e.dataTransfer.setDragImage(BLANK_DRAG_IMAGE, 0, 0);
     });
     chip.addEventListener('dragend', () => {
       dragPreviewPayload = null;
@@ -385,28 +390,6 @@ const Grid = (() => {
     return chip;
   }
 
-  // A small, offscreen element shaped like the dragged item's real footprint, used as the native
-  // drag image so the cursor carries just the product's shape/color instead of the whole palette
-  // chip. Sized using the grid's own current px-per-inch scale (not some independently-chosen
-  // display size) so it matches the item's actual on-canvas size 1:1 -- otherwise it reads as
-  // bigger or smaller than the real thing and makes it hard to judge where it'll actually land.
-  // Flat swatch color only, no photo -- a tiny offscreen ghost isn't the place for image detail.
-  function buildDragGhostEl(payload) {
-    const MIN_PX = 4; // stay visible even for a tiny item on a very zoomed-out floor
-    const w = Math.max(MIN_PX, payload.footprintW * scale);
-    const d = Math.max(MIN_PX, payload.footprintD * scale);
-
-    const el = document.createElement('div');
-    el.style.position = 'fixed';
-    el.style.top = '-1000px';
-    el.style.left = '-1000px';
-    el.style.width = `${w}px`;
-    el.style.height = `${d}px`;
-    el.style.border = '1px solid rgba(255,255,255,0.5)';
-    el.style.background = (payload.swatch && payload.swatch.color) || '#888888';
-    document.body.appendChild(el);
-    return { el, w, d };
-  }
 
   function computeScale() {
     const wrap = document.querySelector('.grid-canvas-wrap');
