@@ -155,9 +155,30 @@
           <h2>Cases</h2>
           <button id="btnAddCase" class="btn-icon" title="Add case">+</button>
         </div>
+        <div id="caseBulkActionsBar" class="bulk-actions-bar hidden">
+          <span id="caseBulkSelectedCount">0 selected</span>
+          <button id="btnCaseBulkEdit" class="btn-secondary">Edit Selected</button>
+          <button id="btnCaseBulkClear" class="btn-icon" title="Clear selection">&times;</button>
+        </div>
         <div id="caseList" class="item-type-list">
           <p class="empty-state">No cases yet. Click + to add one.</p>
         </div>
+      </div>
+
+      <div id="caseBulkEditPanel" class="bulk-panel hidden">
+        <h3>Edit Selected Cases' Size</h3>
+        <p class="bulk-panel-hint">Leave a field blank to leave it unchanged on every selected case. Each case is still checked against its own item type's units-per-case -- any selected case that wouldn't match after this change is skipped and named in a summary instead of applied.</p>
+        <form id="caseBulkEditForm">
+          <div class="form-row-3">
+            <label>Rows<input type="number" step="1" min="1" id="caseBulkRows"></label>
+            <label>Columns<input type="number" step="1" min="1" id="caseBulkCols"></label>
+            <label>Layers<input type="number" step="1" min="1" id="caseBulkLayers"></label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn-primary">Apply to Selected</button>
+            <button type="button" id="btnCaseBulkEditCancel" class="btn-secondary">Cancel</button>
+          </div>
+        </form>
       </div>
 
       <div class="panel-detail">

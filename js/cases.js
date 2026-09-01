@@ -4,6 +4,7 @@ const Cases = (() => {
   let state = null;
   let selectedId = null;
   let editingId = null;
+  let bulkSelectedIds = new Set(); // checkbox selection, independent of the single-row detail selection
 
   function init(appState) {
     state = appState;
@@ -35,6 +36,93 @@ const Cases = (() => {
       document.getElementById(id).addEventListener('input', updateComputedFields);
     });
     document.getElementById('btnAddCaseSwatch').addEventListener('click', handleAddCaseSwatch);
+
+    bindBulkListeners();
+  }
+
+  function bindBulkListeners() {
+    document.getElementById('btnCaseBulkClear').addEventListener('click', () => {
+      bulkSelectedIds.clear();
+      renderList();
+    });
+    document.getElementById('btnCaseBulkEdit').addEventListener('click', openBulkEditPanel);
+    document.getElementById('btnCaseBulkEditCancel').addEventListener('click', () => {
+      document.getElementById('caseBulkEditPanel').classList.add('hidden');
+    });
+    document.getElementById('caseBulkEditForm').addEventListener('submit', handleBulkEditSubmit);
+  }
+
+  function renderBulkBar() {
+    const bar = document.getElementById('caseBulkActionsBar');
+    const count = bulkSelectedIds.size;
+    if (count === 0) {
+      bar.classList.add('hidden');
+      return;
+    }
+    bar.classList.remove('hidden');
+    document.getElementById('caseBulkSelectedCount').textContent = `${count} selected`;
+  }
+
+  function openBulkEditPanel() {
+    if (bulkSelectedIds.size === 0) return;
+    document.getElementById('caseBulkEditForm').reset();
+    document.getElementById('caseBulkEditPanel').classList.remove('hidden');
+  }
+
+  function parseOptionalInt(id) {
+    const raw = document.getElementById(id).value;
+    if (raw === '' || raw === null) return null;
+    const n = parseInt(raw, 10);
+    return Number.isNaN(n) ? null : n;
+  }
+
+  // Applies only the fields actually filled in (blank = leave that field unchanged on that case),
+  // same convention as ItemTypes' bulk edit. Every selected case still has to individually pass the
+  // same units-per-case check the single-case form enforces -- a shared new size can be valid for
+  // one item type's unitsPerCase and not another's, so each case is checked against its OWN item
+  // type rather than assuming a shared arrangement applies uniformly the way bulk case CREATION
+  // (which starts from one shared, freely-chosen arrangement) does.
+  function handleBulkEditSubmit(e) {
+    e.preventDefault();
+    const rowsIn = parseOptionalInt('caseBulkRows');
+    const colsIn = parseOptionalInt('caseBulkCols');
+    const layersIn = parseOptionalInt('caseBulkLayers');
+    if (rowsIn === null && colsIn === null && layersIn === null) {
+      alert('Fill in at least one of rows/columns/layers to apply.');
+      return;
+    }
+
+    const updated = [];
+    const skipped = [];
+    state.cases.forEach(c => {
+      if (!bulkSelectedIds.has(c.id)) return;
+      const newRows = rowsIn !== null ? rowsIn : c.rows;
+      const newCols = colsIn !== null ? colsIn : c.cols;
+      const newLayers = layersIn !== null ? layersIn : c.layers;
+      const itemType = ItemTypes.getItemType(c.itemTypeId);
+      const totalUnits = newRows * newCols * newLayers;
+      if (itemType && totalUnits !== itemType.unitsPerCase) {
+        skipped.push(`${c.name} (needs ${itemType.unitsPerCase}, this would make ${totalUnits})`);
+        return;
+      }
+      c.rows = newRows;
+      c.cols = newCols;
+      c.layers = newLayers;
+      updated.push(c.name);
+    });
+
+    if (updated.length > 0) saveState(state);
+    document.getElementById('caseBulkEditPanel').classList.add('hidden');
+    renderList();
+    if (selectedId) showDetailFor(selectedId);
+
+    let msg = updated.length > 0
+      ? `Updated ${updated.length} case${updated.length > 1 ? 's' : ''}: ${updated.join(', ')}.`
+      : 'No cases updated.';
+    if (skipped.length > 0) {
+      msg += `\n\nSkipped (unit count mismatch):\n${skipped.join('\n')}`;
+    }
+    alert(msg);
   }
 
   async function handleAddCaseSwatch() {
@@ -74,8 +162,11 @@ const Cases = (() => {
 
   function renderList() {
     const listEl = document.getElementById('caseList');
+    bulkSelectedIds.forEach(id => { if (!state.cases.some(c => c.id === id)) bulkSelectedIds.delete(id); });
+
     if (state.cases.length === 0) {
       listEl.innerHTML = '<p class="empty-state">No cases yet. Click + to add one.</p>';
+      renderBulkBar();
       return;
     }
     listEl.innerHTML = '';
@@ -86,6 +177,16 @@ const Cases = (() => {
       const row = document.createElement('div');
       row.className = 'item-type-row' + (c.id === selectedId ? ' selected' : '');
       row.dataset.id = c.id;
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'row-select';
+      checkbox.checked = bulkSelectedIds.has(c.id);
+      checkbox.addEventListener('click', (e) => e.stopPropagation());
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) bulkSelectedIds.add(c.id); else bulkSelectedIds.delete(c.id);
+        renderBulkBar();
+      });
 
       const preview = document.createElement('div');
       preview.className = 'swatch-preview';
@@ -101,12 +202,14 @@ const Cases = (() => {
       dims.className = 'row-dims';
       dims.textContent = itemType ? `${c.rows}x${c.cols}x${c.layers}` : '(missing item type)';
 
+      row.appendChild(checkbox);
       row.appendChild(preview);
       row.appendChild(name);
       row.appendChild(dims);
       row.addEventListener('click', () => showDetailFor(c.id));
       listEl.appendChild(row);
     });
+    renderBulkBar();
   }
 
   function showEmptyDetail() {
