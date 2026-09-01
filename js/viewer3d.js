@@ -196,19 +196,32 @@ const Viewer3D = (() => {
   function buildBoxMesh(width, height, depth, sw) {
     const color = sw ? sw.color : '#888888';
     const flatMat = new THREE.MeshStandardMaterial({ color });
+
+    // Plain stretch to fill the entire face -- BoxGeometry's default UV mapping already covers
+    // each face 0..1, so the image fills every pixel with no cropping, at the cost of distorting
+    // its aspect ratio if the face's own proportions differ from the photo's. Same tradeoff
+    // applies to the optional side/back images below.
     let frontMat = flatMat;
     if (sw && sw.image) {
-      // Plain stretch to fill the entire face -- BoxGeometry's default UV mapping already
-      // covers each face 0..1, so the image fills every pixel with no cropping, at the cost of
-      // distorting its aspect ratio if the face's own proportions differ from the photo's.
       const texture = new THREE.TextureLoader().load(sw.image, (tex) => {
+        // The front photo's average color is the fallback for every face that doesn't have its
+        // own image -- top/bottom always, side/back if the swatch didn't upload one.
         const avgColor = computeAverageColor(tex.image);
         if (avgColor) flatMat.color.set(avgColor);
       });
       frontMat = new THREE.MeshStandardMaterial({ map: texture });
     }
-    // BoxGeometry material order: +X, -X, +Y, -Y, +Z, -Z. Front (largest grid-Y) maps to +Z.
-    const materials = [flatMat, flatMat, flatMat, flatMat, frontMat, flatMat];
+
+    const sideMat = (sw && sw.sideImage)
+      ? new THREE.MeshStandardMaterial({ map: new THREE.TextureLoader().load(sw.sideImage) })
+      : flatMat;
+    const backMat = (sw && sw.backImage)
+      ? new THREE.MeshStandardMaterial({ map: new THREE.TextureLoader().load(sw.backImage) })
+      : flatMat;
+
+    // BoxGeometry material order: +X, -X, +Y, -Y, +Z, -Z. Front (largest grid-Y) maps to +Z,
+    // back maps to -Z, left/right sides share the one uploaded side image (+X/-X).
+    const materials = [sideMat, sideMat, flatMat, flatMat, frontMat, backMat];
     const geo = new THREE.BoxGeometry(width, height, depth);
     return new THREE.Mesh(geo, materials);
   }

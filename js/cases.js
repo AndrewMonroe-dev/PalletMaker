@@ -31,7 +31,7 @@ const Cases = (() => {
     document.getElementById('btnAddCaseSwatch').addEventListener('click', handleAddCaseSwatch);
   }
 
-  function handleAddCaseSwatch() {
+  async function handleAddCaseSwatch() {
     const itemTypeId = document.getElementById('cItemType').value;
     if (!itemTypeId) {
       alert('Select an item type first.');
@@ -39,7 +39,9 @@ const Cases = (() => {
     }
     const nameInput = document.getElementById('cNewSwatchName');
     const colorInput = document.getElementById('cNewSwatchColor');
-    const fileInput = document.getElementById('cNewSwatchImage');
+    const imageInput = document.getElementById('cNewSwatchImage');
+    const sideImageInput = document.getElementById('cNewSwatchSideImage');
+    const backImageInput = document.getElementById('cNewSwatchBackImage');
 
     const name = nameInput.value.trim();
     if (!name) {
@@ -47,26 +49,21 @@ const Cases = (() => {
       return;
     }
 
-    const finalize = (imageDataUrl) => {
-      const swatch = ItemTypes.addSwatchToItemType(itemTypeId, {
-        name,
-        color: colorInput.value,
-        image: imageDataUrl || null
-      });
-      populateSwatchOptions(swatch.id);
-      updateComputedFields();
-      nameInput.value = '';
-      fileInput.value = '';
-    };
+    const [image, sideImage, backImage] = await Promise.all([
+      readFileAsDataUrl(imageInput.files[0]),
+      readFileAsDataUrl(sideImageInput.files[0]),
+      readFileAsDataUrl(backImageInput.files[0])
+    ]);
 
-    const file = fileInput.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => finalize(e.target.result);
-      reader.readAsDataURL(file);
-    } else {
-      finalize(null);
-    }
+    const swatch = ItemTypes.addSwatchToItemType(itemTypeId, {
+      name, color: colorInput.value, image, sideImage, backImage
+    });
+    populateSwatchOptions(swatch.id);
+    updateComputedFields();
+    nameInput.value = '';
+    imageInput.value = '';
+    sideImageInput.value = '';
+    backImageInput.value = '';
   }
 
   function renderList() {

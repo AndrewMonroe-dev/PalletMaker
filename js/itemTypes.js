@@ -169,10 +169,12 @@ const ItemTypes = (() => {
     });
   }
 
-  function handleAddSwatch() {
+  async function handleAddSwatch() {
     const nameInput = document.getElementById('fNewSwatchName');
     const colorInput = document.getElementById('fNewSwatchColor');
-    const fileInput = document.getElementById('fNewSwatchImage');
+    const imageInput = document.getElementById('fNewSwatchImage');
+    const sideImageInput = document.getElementById('fNewSwatchSideImage');
+    const backImageInput = document.getElementById('fNewSwatchBackImage');
 
     const name = nameInput.value.trim();
     if (!name) {
@@ -180,26 +182,23 @@ const ItemTypes = (() => {
       return;
     }
 
-    const finalizeSwatch = (imageDataUrl) => {
-      editingSwatches.push({
-        id: uid('swatch'),
-        name,
-        color: colorInput.value,
-        image: imageDataUrl || null
-      });
-      renderSwatchEditor();
-      nameInput.value = '';
-      fileInput.value = '';
-    };
+    const [image, sideImage, backImage] = await Promise.all([
+      readFileAsDataUrl(imageInput.files[0]),
+      readFileAsDataUrl(sideImageInput.files[0]),
+      readFileAsDataUrl(backImageInput.files[0])
+    ]);
 
-    const file = fileInput.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => finalizeSwatch(e.target.result);
-      reader.readAsDataURL(file);
-    } else {
-      finalizeSwatch(null);
-    }
+    editingSwatches.push({
+      id: uid('swatch'),
+      name,
+      color: colorInput.value,
+      image, sideImage, backImage
+    });
+    renderSwatchEditor();
+    nameInput.value = '';
+    imageInput.value = '';
+    sideImageInput.value = '';
+    backImageInput.value = '';
   }
 
   function handleSubmit(e) {
@@ -263,10 +262,15 @@ const ItemTypes = (() => {
 
   // Lets other tabs (e.g. Cases) add a new palette color to an item type without navigating
   // away to the Item Types tab first.
-  function addSwatchToItemType(itemTypeId, { name, color, image }) {
+  function addSwatchToItemType(itemTypeId, { name, color, image, sideImage, backImage }) {
     const item = getItemType(itemTypeId);
     if (!item) return null;
-    const swatch = { id: uid('swatch'), name, color, image: image || null };
+    const swatch = {
+      id: uid('swatch'), name, color,
+      image: image || null,
+      sideImage: sideImage || null,
+      backImage: backImage || null
+    };
     item.palette.push(swatch);
     saveState(state);
     renderList();
