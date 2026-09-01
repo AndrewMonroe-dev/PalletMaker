@@ -31,6 +31,14 @@ const Viewer3D = (() => {
   let handleMeshes = null;     // { resize, rotate } spheres for the selected panel
   let dragOp3d = null;         // in-progress orbit/move/resize/rotate drag
 
+  // ---- Stack selection/rotation state (highlight + rotate cases directly in the 3D view) ----
+  let stackMeshMap = {};              // three.js object id -> box mesh, rebuilt every buildScene()
+  let stackBoxesByStackId = {};       // stack id -> [box mesh, ...], for live-repositioning during rotate
+  let selectedStackIds3D = new Set(); // ungrouped stacks multi-selected, awaiting Group Selected
+  let selectedGroupId3D = null;       // an existing (or freshly grouped) group selected for rotation
+  let stackHighlights = [];           // wireframe outlines around the current selection
+  let groupRotateHandle3D = null;     // sphere shown above a selected group's center
+
   function init(appState) {
     state = appState;
     document.getElementById('viewer3dAddImage').addEventListener('change', handleAddImage);
@@ -89,6 +97,19 @@ const Viewer3D = (() => {
         return;
       }
 
+      if (groupRotateHandle3D && raycastObjects(e, [groupRotateHandle3D])) {
+        startGroupRotateDrag3D(e);
+        return;
+      }
+
+      const stackHit = raycastObjects(e, Object.values(stackMeshMap));
+      if (stackHit) {
+        // Plain click-to-select, no drag -- cases move only via the 2D grid; the 3D view is for
+        // highlighting and rotating a selection in place.
+        handleStackClick3D(stackHit.object.userData.stackId, e.shiftKey);
+        return;
+      }
+
       startOrbitDrag(e);
     });
 
@@ -98,6 +119,7 @@ const Viewer3D = (() => {
       else if (dragOp3d.type === 'move') doMoveDrag(e);
       else if (dragOp3d.type === 'resize') doResizeDrag(e);
       else if (dragOp3d.type === 'rotate') doRotateDrag(e);
+      else if (dragOp3d.type === 'group-rotate') doGroupRotateDrag3D(e);
     });
 
     window.addEventListener('mouseup', () => {
@@ -107,10 +129,22 @@ const Viewer3D = (() => {
       if (op.type === 'orbit') {
         // A plain click (no real drag) on empty space deselects -- lets you dismiss the handles
         // without hunting for a dedicated close button.
-        if (!op.moved && selectedPanelId) {
-          selectedPanelId = null;
-          removeSelectionVisuals();
+        if (!op.moved) {
+          let changed = false;
+          if (selectedPanelId) { selectedPanelId = null; removeSelectionVisuals(); changed = true; }
+          if (selectedStackIds3D.size > 0 || selectedGroupId3D) {
+            selectedStackIds3D.clear();
+            selectedGroupId3D = null;
+            removeStackHighlights3D();
+            removeGroupRotateHandle3D();
+            renderSelectionPanel3D();
+            changed = true;
+          }
         }
+        return;
+      }
+      if (op.type === 'group-rotate') {
+        finishGroupRotateDrag3D(op);
         return;
       }
       if (op.moved) {
@@ -386,6 +420,239 @@ const Viewer3D = (() => {
     );
   }
 
+  // ---- Stack selection, highlighting, and group rotation directly in the 3D view ----
+  // Selection lives in this module only (ephemeral, like the panel selection above); the actual
+  // grouping and rotation always go through Grid's own group data (project.groups) via its public
+  // API, so undo, collision-checking, and the 2D grid all stay perfectly in sync -- 3D never keeps
+  // its own parallel copy of what's grouped or how it's rotated.
+
+  function findStack(stackId) {
+    return project.stacks.find(s => s.id === stackId) || null;
+  }
+
+  function handleStackClick3D(stackId, shiftKey) {
+    const stack = findStack(stackId);
+    if (!stack) return;
+
+    if (stack.groupId) {
+      // Clicking any member of an existing group selects the whole group, matching the 2D grid
+      // (individual members of a group aren't separately selectable there either).
+      selectedGroupId3D = stack.groupId;
+      selectedStackIds3D.clear();
+      rebuildSelectionVisuals3D();
+      return;
+    }
+
+    selectedGroupId3D = null;
+    if (shiftKey) {
+      if (selectedStackIds3D.has(stackId)) selectedStackIds3D.delete(stackId);
+      else selectedStackIds3D.add(stackId);
+    } else {
+      selectedStackIds3D = new Set([stackId]);
+    }
+    rebuildSelectionVisuals3D();
+  }
+
+  // Base-column height plus the tallest topper's own height (toppers start stacking right where
+  // the base column ends), for sizing the highlight wireframe around a whole stack.
+  function computeStackTotalHeight(stack) {
+    const baseHeight = stack.items.reduce((sum, item) => sum + getItemHeight(item), 0);
+    let maxTopperHeight = 0;
+    (stack.toppers || []).forEach(t => {
+      const th = t.items.reduce((sum, item) => sum + getItemHeight(item), 0);
+      maxTopperHeight = Math.max(maxTopperHeight, th);
+    });
+    return baseHeight + maxTopperHeight;
+  }
+
+  function addStackHighlight3D(stack, worldCenterGrid, angleDeg) {
+    const totalHeight = computeStackTotalHeight(stack) || 1;
+    const geo = new THREE.EdgesGeometry(new THREE.BoxGeometry(stack.footprintW, totalHeight, stack.footprintD));
+    const mesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x3b82f6 }));
+    mesh.position.set(toSceneX(worldCenterGrid.x), totalHeight / 2, toSceneZ(worldCenterGrid.y));
+    mesh.rotation.y = -(angleDeg * Math.PI) / 180;
+    scene.add(mesh);
+    stackHighlights.push(mesh);
+  }
+
+  function removeStackHighlights3D() {
+    stackHighlights.forEach(m => scene.remove(m));
+    stackHighlights = [];
+  }
+
+  function removeGroupRotateHandle3D() {
+    if (groupRotateHandle3D) { scene.remove(groupRotateHandle3D); groupRotateHandle3D = null; }
+  }
+
+  function addGroupRotateHandle3D(group, members) {
+    let maxHeight = 1;
+    members.forEach(({ stack }) => { maxHeight = Math.max(maxHeight, computeStackTotalHeight(stack)); });
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(Math.max(0.6, Math.min(stackHighlightRadius(group), 1.5)), 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0x22c55e })
+    );
+    mesh.position.set(toSceneX(group.centerX), maxHeight + 3, toSceneZ(group.centerY));
+    scene.add(mesh);
+    groupRotateHandle3D = mesh;
+  }
+
+  // A small, size-aware radius for the rotate handle sphere so it doesn't look absurdly tiny on a
+  // large group or absurdly huge on a small one.
+  function stackHighlightRadius(group) {
+    return Math.max(group.memberIds.length, 1) * 0.15 + 0.6;
+  }
+
+  function rebuildSelectionVisuals3D() {
+    removeStackHighlights3D();
+    removeGroupRotateHandle3D();
+
+    if (selectedGroupId3D) {
+      const group = project.groups.find(g => g.id === selectedGroupId3D);
+      if (!group) {
+        selectedGroupId3D = null;
+      } else {
+        const members = Grid.getGroupMembers(group);
+        members.forEach(({ stack, worldCenter }) => addStackHighlight3D(stack, worldCenter, group.angle));
+        addGroupRotateHandle3D(group, members);
+      }
+    } else {
+      selectedStackIds3D.forEach(id => {
+        const stack = findStack(id);
+        if (stack) {
+          addStackHighlight3D(stack, { x: stack.x + stack.footprintW / 2, y: stack.y + stack.footprintD / 2 }, 0);
+        }
+      });
+    }
+
+    renderSelectionPanel3D();
+  }
+
+  // Pure function mirroring Grid.getGroupMembers' rotation math for a hypothetical angle, without
+  // touching the group's real (persisted, undo-tracked) angle -- used for the live preview during
+  // a rotate drag so nothing is committed until mouseup.
+  function computeGroupMemberWorldCentersAtAngle(group, angleDeg) {
+    const a = (angleDeg * Math.PI) / 180;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    return group.memberIds.map(stackId => {
+      const m = group.members[stackId];
+      return {
+        stackId,
+        worldCenter: {
+          x: group.centerX + m.dx * cos - m.dy * sin,
+          y: group.centerY + m.dx * sin + m.dy * cos
+        }
+      };
+    });
+  }
+
+  function startGroupRotateDrag3D() {
+    if (!selectedGroupId3D) return;
+    const group = project.groups.find(g => g.id === selectedGroupId3D);
+    if (!group) return;
+    dragOp3d = {
+      type: 'group-rotate',
+      groupId: group.id,
+      plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
+      previewAngle: group.angle,
+      moved: false,
+      startAngle: group.angle
+    };
+  }
+
+  function doGroupRotateDrag3D(e) {
+    const group = project.groups.find(g => g.id === dragOp3d.groupId);
+    const point = raycastPlane(e, dragOp3d.plane);
+    if (!group || !point) return;
+
+    const centerX = toSceneX(group.centerX);
+    const centerZ = toSceneZ(group.centerY);
+    const dx = point.x - centerX;
+    const dz = point.z - centerZ;
+    if (Math.hypot(dx, dz) < 0.01) return;
+
+    const angle = -((Math.atan2(dx, dz) * 180) / Math.PI);
+    if (Math.abs(angle - dragOp3d.startAngle) > 0.5) dragOp3d.moved = true;
+    dragOp3d.previewAngle = angle;
+
+    // Live-reposition the real box meshes (and the highlight/handle) at the preview angle --
+    // visual only, group.angle itself is never touched until the drag commits on mouseup.
+    computeGroupMemberWorldCentersAtAngle(group, angle).forEach(({ stackId, worldCenter }) => {
+      const boxes = stackBoxesByStackId[stackId] || [];
+      boxes.forEach(box => {
+        box.position.x = toSceneX(worldCenter.x);
+        box.position.z = toSceneZ(worldCenter.y);
+        box.rotation.y = -(angle * Math.PI) / 180;
+      });
+    });
+
+    removeStackHighlights3D();
+    const members = Grid.getGroupMembers(group).map(({ stack }, i) => ({
+      stack,
+      worldCenter: computeGroupMemberWorldCentersAtAngle(group, angle)[i].worldCenter
+    }));
+    members.forEach(({ stack, worldCenter }) => addStackHighlight3D(stack, worldCenter, angle));
+    if (groupRotateHandle3D) {
+      let maxHeight = 1;
+      members.forEach(({ stack }) => { maxHeight = Math.max(maxHeight, computeStackTotalHeight(stack)); });
+      groupRotateHandle3D.position.set(toSceneX(group.centerX), maxHeight + 3, toSceneZ(group.centerY));
+    }
+  }
+
+  function finishGroupRotateDrag3D(op) {
+    if (!op.moved) return;
+    // The single real mutation: collision-checked, undo-tracked, and it snapshots the TRUE
+    // pre-drag state itself -- nothing above ever touched the persisted group.angle.
+    Grid.setGroupAngle(op.groupId, op.previewAngle);
+    saveState(state);
+    refresh();
+  }
+
+  function handleGroupSelectedClick3D() {
+    if (selectedStackIds3D.size < 2) return;
+    const groupId = Grid.groupStacks(Array.from(selectedStackIds3D));
+    if (!groupId) return;
+    selectedStackIds3D.clear();
+    selectedGroupId3D = groupId;
+    refresh();
+  }
+
+  function renderSelectionPanel3D() {
+    const panel = document.getElementById('viewer3dSelectionPanel');
+    if (!panel) return;
+
+    if (selectedGroupId3D) {
+      const group = project.groups.find(g => g.id === selectedGroupId3D);
+      if (!group) { panel.innerHTML = '<p class="empty-state">Click a case to select it.</p>'; return; }
+      panel.innerHTML = `
+        <div class="sel-row"><span>Stacks in group</span><strong>${group.memberIds.length}</strong></div>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85rem;color:var(--text-dim);">
+          Angle (degrees)
+          <input type="number" id="viewer3dGroupAngle" step="1" value="${Math.round(group.angle)}">
+        </label>
+        <p class="empty-state">Drag the green handle above the group to rotate freely.</p>
+      `;
+      document.getElementById('viewer3dGroupAngle').addEventListener('change', (e) => {
+        Grid.setGroupAngle(group.id, parseFloat(e.target.value) || 0);
+        saveState(state);
+        refresh();
+      });
+      return;
+    }
+
+    if (selectedStackIds3D.size > 0) {
+      panel.innerHTML = `
+        <p class="empty-state">${selectedStackIds3D.size} stack(s) selected. Shift+click to add or remove more.</p>
+        <div class="form-actions">
+          <button type="button" id="viewer3dGroupSelectedBtn" class="btn-primary" ${selectedStackIds3D.size < 2 ? 'disabled' : ''}>Group Selected (${selectedStackIds3D.size})</button>
+        </div>
+      `;
+      document.getElementById('viewer3dGroupSelectedBtn').addEventListener('click', handleGroupSelectedClick3D);
+      return;
+    }
+
+    panel.innerHTML = '<p class="empty-state">Click a case in the 3D view to select it. Shift+click to select several, then group them to rotate as one.</p>';
+  }
+
   function refresh() {
     project = Grid.getActiveProject();
     const noProjectEl = document.getElementById('viewer3dNoProject');
@@ -475,6 +742,13 @@ const Viewer3D = (() => {
     addStacksToScene();
     addImagePanelsToScene();
 
+    // Selection is ephemeral view state that survives a scene rebuild, but the group/stacks it
+    // points at might not (e.g. the group was deleted from the 2D grid) -- validate before
+    // rebuilding the highlight/handle visuals against the freshly-built scene.
+    if (selectedGroupId3D && !project.groups.some(g => g.id === selectedGroupId3D)) selectedGroupId3D = null;
+    selectedStackIds3D.forEach(id => { if (!findStack(id)) selectedStackIds3D.delete(id); });
+    rebuildSelectionVisuals3D();
+
     radius = maxDim * 1.4 + 40;
     updateCameraPosition();
   }
@@ -483,6 +757,9 @@ const Viewer3D = (() => {
   function toSceneZ(gridY) { return gridY - project.footprintDepth / 2; }
 
   function addStacksToScene() {
+    stackMeshMap = {};
+    stackBoxesByStackId = {};
+
     project.stacks.filter(s => !s.groupId).forEach(stack => {
       addStackMeshes(stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, 0);
     });
@@ -495,10 +772,12 @@ const Viewer3D = (() => {
   }
 
   function addStackMeshes(stack, centerGridX, centerGridY, angleDeg) {
-    const baseHeight = addItemColumn(stack.items, centerGridX, centerGridY, angleDeg, 0, stack.footprintW, stack.footprintD);
+    const baseHeight = addItemColumn(stack.id, stack.items, centerGridX, centerGridY, angleDeg, 0, stack.footprintW, stack.footprintD);
 
     // Toppers sit on top of the base column, offset within the stack's own footprint and rotated
-    // rigidly with it -- same transform used for their 2D counterpart in grid.js.
+    // rigidly with it -- same transform used for their 2D counterpart in grid.js. Tagged with the
+    // PARENT stack's id (not a separate topper id) so clicking a topper box selects/rotates the
+    // whole stack it rides on, matching how toppers have no independent rotation in the data model.
     (stack.toppers || []).forEach(topper => {
       const offsetX = topper.dx + topper.footprintW / 2 - stack.footprintW / 2;
       const offsetY = topper.dy + topper.footprintD / 2 - stack.footprintD / 2;
@@ -506,14 +785,16 @@ const Viewer3D = (() => {
       const cos = Math.cos(a), sin = Math.sin(a);
       const topperCenterX = centerGridX + offsetX * cos - offsetY * sin;
       const topperCenterY = centerGridY + offsetX * sin + offsetY * cos;
-      addItemColumn(topper.items, topperCenterX, topperCenterY, angleDeg, baseHeight, topper.footprintW, topper.footprintD);
+      addItemColumn(stack.id, topper.items, topperCenterX, topperCenterY, angleDeg, baseHeight, topper.footprintW, topper.footprintD);
     });
   }
 
   // Renders one vertically-stacked column of items (a stack's base, or a topper's own pile)
   // starting at startHeight, each box at its own real footprint centered on the column. Returns
-  // the height the column reached, so a caller can stack something else on top of it.
-  function addItemColumn(items, centerGridX, centerGridY, angleDeg, startHeight, fallbackW, fallbackD) {
+  // the height the column reached, so a caller can stack something else on top of it. Every box
+  // is tagged with its owning stack's id (for click-to-select/highlight/rotate in the 3D view) and
+  // recorded in stackBoxesByStackId (for live-repositioning it during a rotate drag).
+  function addItemColumn(stackId, items, centerGridX, centerGridY, angleDeg, startHeight, fallbackW, fallbackD) {
     let yCursor = startHeight;
     items.forEach(item => {
       const itemHeight = getItemHeight(item);
@@ -526,6 +807,9 @@ const Viewer3D = (() => {
       const box = buildBoxMesh(footprint.w, itemHeight, footprint.d, sw);
       box.position.set(toSceneX(centerGridX), yCursor + itemHeight / 2, toSceneZ(centerGridY));
       box.rotation.y = -(angleDeg * Math.PI) / 180;
+      box.userData.stackId = stackId;
+      stackMeshMap[box.id] = box;
+      (stackBoxesByStackId[stackId] || (stackBoxesByStackId[stackId] = [])).push(box);
       scene.add(box);
       yCursor += itemHeight;
     });

@@ -1036,8 +1036,22 @@ const Grid = (() => {
 
   function handleGroupSelected() {
     if (multiSelectIds.size < 2) return;
+    const groupId = groupStackIds(Array.from(multiSelectIds));
+    if (!groupId) return;
+    multiSelectIds.clear();
+    selectedGroupId = groupId;
+    render();
+  }
+
+  // Creates a group from the given (ungrouped) stack ids -- the shared mutation both the 2D
+  // grid's "Group Selected" button and the 3D viewer's equivalent call into, so there's one
+  // source of truth for what grouping actually does. Returns the new group's id, or null if
+  // fewer than 2 valid ungrouped stacks were given.
+  function groupStackIds(stackIds) {
+    const memberStacks = project.stacks.filter(s => stackIds.includes(s.id) && !s.groupId);
+    if (memberStacks.length < 2) return null;
+
     pushUndo(snapshotProject());
-    const memberStacks = project.stacks.filter(s => multiSelectIds.has(s.id));
 
     const minX = Math.min(...memberStacks.map(s => s.x));
     const minY = Math.min(...memberStacks.map(s => s.y));
@@ -1051,7 +1065,6 @@ const Grid = (() => {
       const stackCenterX = s.x + s.footprintW / 2;
       const stackCenterY = s.y + s.footprintD / 2;
       members[s.id] = { dx: stackCenterX - centerX, dy: stackCenterY - centerY };
-      s.groupId = null; // set below once group id known
     });
 
     const group = {
@@ -1064,10 +1077,8 @@ const Grid = (() => {
     memberStacks.forEach(s => { s.groupId = group.id; });
     project.groups.push(group);
 
-    multiSelectIds.clear();
-    selectedGroupId = group.id;
     saveState(state);
-    render();
+    return group.id;
   }
 
   function handleUngroup(groupId) {
@@ -1965,5 +1976,8 @@ const Grid = (() => {
     return project;
   }
 
-  return { init, refresh, getActiveProject, getGroupMembers, resolveSwatch, computeTally };
+  return {
+    init, refresh, getActiveProject, getGroupMembers, resolveSwatch, computeTally,
+    groupStacks: groupStackIds, setGroupAngle
+  };
 })();
