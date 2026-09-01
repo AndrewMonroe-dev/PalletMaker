@@ -14,6 +14,13 @@ const Viewer3D = (() => {
   let animFrameId = null;
   const raycaster = new THREE.Raycaster();
 
+  // Render-on-demand: the loop below runs every frame but only pays for an actual GPU render
+  // (with shadows, this scene is not cheap) when something visual actually changed since the
+  // last one -- a static, unmoved view costs nothing per frame instead of a full render at 60fps
+  // forever. markDirty() is the one thing every camera/light/scene/drag mutation needs to call.
+  let needsRender = true;
+  function markDirty() { needsRender = true; }
+
   let azimuth = Math.PI / 4;
   let elevation = Math.PI / 6;
   let radius = 100;
@@ -74,6 +81,7 @@ const Viewer3D = (() => {
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     renderer.setSize(width, height);
+    markDirty();
   }
 
   function bindCanvasInteraction() {
@@ -113,6 +121,7 @@ const Viewer3D = (() => {
 
     window.addEventListener('mousemove', (e) => {
       if (!dragOp3d) return;
+      markDirty(); // every drag type below repositions something visual
       if (dragOp3d.type === 'orbit') doOrbitDrag(e);
       else if (dragOp3d.type === 'move') doMoveDrag(e);
       else if (dragOp3d.type === 'resize') doResizeDrag(e);
@@ -139,6 +148,7 @@ const Viewer3D = (() => {
             renderSelectionPanel3D();
             changed = true;
           }
+          if (changed) markDirty();
         }
         return;
       }
@@ -378,6 +388,7 @@ const Viewer3D = (() => {
 
   function rebuildSelectionVisuals() {
     removeSelectionVisuals();
+    markDirty();
     if (!selectedPanelId) return;
     const panel = findPanel(selectedPanelId);
     if (!panel) { selectedPanelId = null; return; }
@@ -565,6 +576,7 @@ const Viewer3D = (() => {
     }
 
     renderSelectionPanel3D();
+    markDirty();
   }
 
   // Pure function mirroring Grid.getGroupMembers' transform math for a hypothetical center/angle,
@@ -1021,6 +1033,7 @@ const Viewer3D = (() => {
       radius * Math.cos(azimuth) * Math.cos(elevation)
     );
     camera.lookAt(0, targetY, 0);
+    markDirty();
   }
 
   // Positions the directional light on a sphere around the scene from lightAzimuth/lightElevation
@@ -1041,12 +1054,17 @@ const Viewer3D = (() => {
     );
     dirLight.target.position.set(0, targetY, 0);
     dirLight.target.updateMatrixWorld();
+    markDirty();
   }
 
   function startRenderLoop() {
     if (animFrameId) return;
+    needsRender = true; // always paint at least once when the loop (re)starts
     const loop = () => {
-      if (renderer && scene && camera) renderer.render(scene, camera);
+      if (needsRender && renderer && scene && camera) {
+        renderer.render(scene, camera);
+        needsRender = false;
+      }
       animFrameId = requestAnimationFrame(loop);
     };
     animFrameId = requestAnimationFrame(loop);
@@ -1270,5 +1288,5 @@ const Viewer3D = (() => {
     printWindow.document.close();
   }
 
-  return { init, refresh };
+  return { init, refresh, stopRenderLoop };
 })();
