@@ -136,6 +136,22 @@ function computeAverageColorFromDataUrl(dataUrl) {
   });
 }
 
+// Flat-color stand-in for a swatch's actual photo, for any small preview/thumbnail that doesn't
+// need the real image -- item type/case list rows, palette chips, the swatch editor's mini cards.
+// Andrew reported the whole tab crashing (not just freezing) on Edge, consistent with the browser
+// running out of memory: even after the grid itself stopped rendering full photos (an earlier fix),
+// every one of THESE small thumbnails was still a CSS background-image of the real, potentially
+// full-resolution photo -- with dozens of item types/cases each carrying one, that's a lot of
+// decoded bitmap data resident in memory simultaneously just to show tiny preview squares. Reusing
+// the cached avgColor (same predominant-color sampling used for the grid) here too removes every
+// remaining place in the app that decodes a full photo just to render a thumbnail. Falls back to
+// the swatch's flat hand-picked color for old data that hasn't been through Recompress Photos yet
+// -- still zero decode cost, just not yet the true predominant color for that one swatch.
+function getSwatchFlatColor(sw) {
+  if (!sw) return '#888888';
+  return sw.avgColor || sw.color || '#888888';
+}
+
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;')

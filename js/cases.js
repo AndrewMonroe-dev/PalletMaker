@@ -191,7 +191,7 @@ const Cases = (() => {
       const preview = document.createElement('div');
       preview.className = 'swatch-preview';
       if (swatch) {
-        preview.style.background = swatch.image ? `url(${swatch.image}) center/cover` : swatch.color;
+        preview.style.background = getSwatchFlatColor(swatch);
       }
 
       const name = document.createElement('div');

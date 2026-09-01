@@ -126,9 +126,7 @@ const ItemTypes = (() => {
       preview.className = 'swatch-preview';
       const firstSwatch = it.palette[0];
       if (firstSwatch) {
-        preview.style.background = firstSwatch.image
-          ? `url(${firstSwatch.image}) center/cover`
-          : firstSwatch.color;
+        preview.style.background = getSwatchFlatColor(firstSwatch);
       }
 
       const name = document.createElement('div');
@@ -390,7 +388,7 @@ const ItemTypes = (() => {
 
       const colorEl = document.createElement('div');
       colorEl.className = 'swatch-color';
-      colorEl.style.background = sw.image ? `url(${sw.image}) center/cover` : sw.color;
+      colorEl.style.background = getSwatchFlatColor(sw);
 
       const nameEl = document.createElement('div');
       nameEl.className = 'swatch-name';

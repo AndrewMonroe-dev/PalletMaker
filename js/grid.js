@@ -351,9 +351,7 @@ const Grid = (() => {
     const preview = document.createElement('div');
     preview.className = 'swatch-preview';
     if (payload.swatch) {
-      preview.style.background = payload.swatch.image
-        ? `url(${payload.swatch.image}) center/cover`
-        : payload.swatch.color;
+      preview.style.background = getSwatchFlatColor(payload.swatch);
     }
 
     const text = document.createElement('div');
