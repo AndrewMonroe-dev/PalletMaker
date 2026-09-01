@@ -617,7 +617,7 @@ const Grid = (() => {
       pushUndo(snapshotProject());
       placement.targetStack.items.push(newItem);
       saveState(state);
-      render();
+      renderAfterDrop();
       return;
     }
 
@@ -625,7 +625,7 @@ const Grid = (() => {
       pushUndo(snapshotProject());
       placement.topper.items.push(newItem);
       saveState(state);
-      render();
+      renderAfterDrop();
       return;
     }
 
@@ -639,7 +639,7 @@ const Grid = (() => {
         items: [newItem]
       });
       saveState(state);
-      render();
+      renderAfterDrop();
       return;
     }
 
@@ -659,7 +659,17 @@ const Grid = (() => {
       groupId: null
     });
     saveState(state);
-    render();
+    renderAfterDrop();
+  }
+
+  // Some browsers defer repainting the page under an active native HTML5 drag until the whole
+  // drag/drop session (including the 'dragend' event still pending on the source element) has
+  // fully torn down -- a plain synchronous render() call made from inside 'drop' can end up
+  // silently not painted until something else forces a reflow (e.g. switching tabs). saveState()
+  // above already runs synchronously so the data itself is never at risk; only the visual update
+  // is deferred one frame, right after the browser's own drag cleanup, so it reliably paints.
+  function renderAfterDrop() {
+    requestAnimationFrame(() => render());
   }
 
   // Live ghost box shown while dragging a palette item over the canvas, sized to the item's real
