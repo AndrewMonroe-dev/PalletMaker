@@ -296,6 +296,17 @@ select {
 
 .grid-palette h3, .grid-selection h3 { margin: 0 0 10px; font-size: 0.9rem; }
 
+.grid-palette {
+  /* Bounded and independently scrollable so scrolling through a long item list doesn't scroll
+     the whole page (and the grid canvas along with it) -- the mouse wheel over this list scrolls
+     just the list once it has its own overflow. Sticky so it (and the canvas beside it) also stay
+     in view if something below pushes the page taller. */
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+
 .palette-chip {
   display: flex;
   align-items: center;
