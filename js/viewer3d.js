@@ -1,7 +1,8 @@
 /* 3D viewer: renders the active project's stacks/groups at real-world scale using Three.js.
    Front face (largest grid-Y / bottom edge of the floor) shows the item's swatch image if it has
    one; every other face shows the swatch's flat color. Supports orbit drag/zoom, placeable image
-   panels, and exporting the current view as a PNG. */
+   panels (draggable to move, with resize/rotate handles when selected), and exporting the current
+   view as a PNG. */
 
 const Viewer3D = (() => {
   let state = null;
@@ -11,12 +12,19 @@ const Viewer3D = (() => {
   let scene = null;
   let camera = null;
   let animFrameId = null;
+  const raycaster = new THREE.Raycaster();
 
   let azimuth = Math.PI / 4;
   let elevation = Math.PI / 6;
   let radius = 100;
-  let isDragging = false;
-  let lastX = 0, lastY = 0;
+
+  // ---- Image panel selection/manipulation state ----
+  const MIN_PANEL_SIZE = 1; // inches
+  let panelMeshMap = {};       // panel id -> its plane mesh, rebuilt every buildScene()
+  let selectedPanelId = null;  // ephemeral view state, not persisted
+  let selectionOutline = null; // wireframe around the selected panel
+  let handleMeshes = null;     // { resize, rotate } spheres for the selected panel
+  let dragOp3d = null;         // in-progress orbit/move/resize/rotate drag
 
   function init(appState) {
     state = appState;
@@ -27,28 +35,320 @@ const Viewer3D = (() => {
 
   function bindCanvasInteraction() {
     const container = document.getElementById('viewer3dCanvas');
+
     container.addEventListener('mousedown', (e) => {
-      isDragging = true;
-      lastX = e.clientX;
-      lastY = e.clientY;
+      if (!project || !renderer) return;
+
+      // Handles (if a panel is selected) take priority over panel bodies, which take priority
+      // over the empty-space orbit drag -- known simplification: this only hit-tests handles and
+      // panel planes, not the item boxes in front of them, so a panel fully hidden behind a box
+      // can still be grabbed through it.
+      if (handleMeshes) {
+        if (raycastObjects(e, [handleMeshes.resize])) { startResizeDrag(e); return; }
+        if (raycastObjects(e, [handleMeshes.rotate])) { startRotateDrag(e); return; }
+      }
+
+      const panelHit = raycastObjects(e, Object.values(panelMeshMap));
+      if (panelHit) {
+        startMoveDrag(e, panelHit.object.userData.panelId);
+        return;
+      }
+
+      startOrbitDrag(e);
     });
+
     window.addEventListener('mousemove', (e) => {
-      if (!isDragging) return;
-      const dx = e.clientX - lastX;
-      const dy = e.clientY - lastY;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      azimuth -= dx * 0.01;
-      elevation = Math.max(0.05, Math.min(Math.PI / 2 - 0.05, elevation + dy * 0.01));
-      updateCameraPosition();
+      if (!dragOp3d) return;
+      if (dragOp3d.type === 'orbit') doOrbitDrag(e);
+      else if (dragOp3d.type === 'move') doMoveDrag(e);
+      else if (dragOp3d.type === 'resize') doResizeDrag(e);
+      else if (dragOp3d.type === 'rotate') doRotateDrag(e);
     });
-    window.addEventListener('mouseup', () => { isDragging = false; });
+
+    window.addEventListener('mouseup', () => {
+      if (!dragOp3d) return;
+      const op = dragOp3d;
+      dragOp3d = null;
+      if (op.type === 'orbit') {
+        // A plain click (no real drag) on empty space deselects -- lets you dismiss the handles
+        // without hunting for a dedicated close button.
+        if (!op.moved && selectedPanelId) {
+          selectedPanelId = null;
+          removeSelectionVisuals();
+        }
+        return;
+      }
+      if (op.moved) {
+        saveState(state);
+        refresh();
+      }
+    });
+
     container.addEventListener('wheel', (e) => {
       if (!project) return;
       e.preventDefault();
       radius = Math.max(20, radius + e.deltaY * 0.5);
       updateCameraPosition();
     }, { passive: false });
+  }
+
+  // ---- Raycasting helpers ----
+
+  function getMouseNDC(e) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    return new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1
+    );
+  }
+
+  function raycastObjects(e, objects) {
+    if (!objects.length) return null;
+    raycaster.setFromCamera(getMouseNDC(e), camera);
+    const hits = raycaster.intersectObjects(objects, false);
+    return hits.length ? hits[0] : null;
+  }
+
+  function raycastPlane(e, plane) {
+    raycaster.setFromCamera(getMouseNDC(e), camera);
+    const point = new THREE.Vector3();
+    return raycaster.ray.intersectPlane(plane, point) ? point : null;
+  }
+
+  // ---- Panel geometry helpers (world-space position/orientation from grid-space panel data) ----
+
+  function panelWorldCenter(panel) {
+    return new THREE.Vector3(toSceneX(panel.x), panel.heightOffGround + panel.height / 2, toSceneZ(panel.y));
+  }
+
+  // The panel's own rotation, matching mesh.rotation.y = -(panel.rotationY * PI / 180) elsewhere.
+  function panelMeshRotationY(panel) {
+    return -(panel.rotationY * Math.PI) / 180;
+  }
+
+  // Direction the panel's front (originally +Z) faces after rotation -- used only to orient the
+  // drag plane, so either of the two possible normal signs works equally well.
+  function panelNormal(panel) {
+    const theta = panelMeshRotationY(panel);
+    return new THREE.Vector3(Math.sin(theta), 0, Math.cos(theta));
+  }
+
+  // The panel's local +X (width) direction after rotation, for decomposing a resize drag.
+  function panelRightVector(panel) {
+    const theta = panelMeshRotationY(panel);
+    return new THREE.Vector3(Math.cos(theta), 0, -Math.sin(theta));
+  }
+
+  function buildPanelPlane(panel) {
+    return new THREE.Plane().setFromNormalAndCoplanarPoint(panelNormal(panel), panelWorldCenter(panel));
+  }
+
+  function findPanel(panelId) {
+    return (project.imagePanels || []).find(p => p.id === panelId) || null;
+  }
+
+  // ---- Orbit drag (unchanged behavior, just refactored to share one drag-state machine) ----
+
+  function startOrbitDrag(e) {
+    dragOp3d = { type: 'orbit', startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY, moved: false };
+  }
+
+  function doOrbitDrag(e) {
+    const dx = e.clientX - dragOp3d.lastX;
+    const dy = e.clientY - dragOp3d.lastY;
+    dragOp3d.lastX = e.clientX;
+    dragOp3d.lastY = e.clientY;
+    if (Math.abs(e.clientX - dragOp3d.startX) > 3 || Math.abs(e.clientY - dragOp3d.startY) > 3) dragOp3d.moved = true;
+    azimuth -= dx * 0.01;
+    elevation = Math.max(0.05, Math.min(Math.PI / 2 - 0.05, elevation + dy * 0.01));
+    updateCameraPosition();
+  }
+
+  // ---- Move drag: click-and-drag a panel directly, raycast against its own plane so it slides
+  // exactly along its mounted surface regardless of camera angle. ----
+
+  function startMoveDrag(e, panelId) {
+    const panel = findPanel(panelId);
+    if (!panel) return;
+    if (selectedPanelId !== panelId) {
+      selectedPanelId = panelId;
+      rebuildSelectionVisuals();
+    }
+    const plane = buildPanelPlane(panel);
+    dragOp3d = {
+      type: 'move', panelId, plane,
+      startPoint: raycastPlane(e, plane),
+      startPanelX: panel.x, startPanelY: panel.y, startHeightOffGround: panel.heightOffGround,
+      moved: false
+    };
+  }
+
+  function doMoveDrag(e) {
+    const panel = findPanel(dragOp3d.panelId);
+    const point = raycastPlane(e, dragOp3d.plane);
+    if (!panel || !point || !dragOp3d.startPoint) return;
+    const delta = point.clone().sub(dragOp3d.startPoint);
+    if (delta.length() > 0.05) dragOp3d.moved = true;
+    // toSceneX/toSceneZ are plain translations (no rotation), so a world-space delta maps
+    // straight onto grid-space x/y regardless of the panel's own rotation.
+    panel.x = dragOp3d.startPanelX + delta.x;
+    panel.y = dragOp3d.startPanelY + delta.z;
+    panel.heightOffGround = Math.max(0, dragOp3d.startHeightOffGround + delta.y);
+    liveUpdatePanelTransform(panel);
+  }
+
+  // ---- Resize drag: the top-right handle. Width grows about the panel's own center (x/y stay
+  // put); height grows upward from the mounted bottom edge (heightOffGround stays put). ----
+
+  function startResizeDrag(e) {
+    const panel = findPanel(selectedPanelId);
+    if (!panel) return;
+    const plane = buildPanelPlane(panel);
+    dragOp3d = {
+      type: 'resize', panelId: panel.id, plane,
+      startPoint: raycastPlane(e, plane),
+      startWidth: panel.width, startHeight: panel.height,
+      right: panelRightVector(panel),
+      moved: false
+    };
+  }
+
+  function doResizeDrag(e) {
+    const panel = findPanel(dragOp3d.panelId);
+    const point = raycastPlane(e, dragOp3d.plane);
+    if (!panel || !point || !dragOp3d.startPoint) return;
+    const delta = point.clone().sub(dragOp3d.startPoint);
+    if (delta.length() > 0.05) dragOp3d.moved = true;
+    const rightDelta = delta.dot(dragOp3d.right);
+    const upDelta = delta.y;
+    panel.width = Math.max(MIN_PANEL_SIZE, dragOp3d.startWidth + 2 * rightDelta);
+    panel.height = Math.max(MIN_PANEL_SIZE, dragOp3d.startHeight + upDelta);
+    liveResizePanelMesh(panel);
+  }
+
+  // ---- Rotate drag: the green handle. Angle is the absolute bearing from the panel's center to
+  // the cursor (projected onto a horizontal plane through the panel), same "point where you drag"
+  // convention as the 2D grid's group rotate handle. ----
+
+  function startRotateDrag(e) {
+    const panel = findPanel(selectedPanelId);
+    if (!panel) return;
+    const centerY = panel.heightOffGround + panel.height / 2;
+    dragOp3d = {
+      type: 'rotate', panelId: panel.id,
+      plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -centerY),
+      moved: false, startRotationY: panel.rotationY
+    };
+  }
+
+  function doRotateDrag(e) {
+    const panel = findPanel(dragOp3d.panelId);
+    const point = raycastPlane(e, dragOp3d.plane);
+    if (!panel || !point) return;
+    const center = panelWorldCenter(panel);
+    const dx = point.x - center.x;
+    const dz = point.z - center.z;
+    if (Math.hypot(dx, dz) < 0.01) return;
+    const newRotationY = -(Math.atan2(dx, dz) * 180) / Math.PI;
+    if (Math.abs(newRotationY - dragOp3d.startRotationY) > 0.5) dragOp3d.moved = true;
+    panel.rotationY = newRotationY;
+    liveRotatePanelMesh(panel);
+  }
+
+  // ---- Live visual updates during a drag (cheap mesh mutation -- the real commit, including a
+  // proper rebuilt PlaneGeometry for a resize, happens once on mouseup via refresh()). ----
+
+  function liveUpdatePanelTransform(panel) {
+    const mesh = panelMeshMap[panel.id];
+    const center = panelWorldCenter(panel);
+    if (mesh) mesh.position.copy(center);
+    if (panel.id === selectedPanelId) {
+      if (selectionOutline) selectionOutline.position.copy(center);
+      updateHandlePositions(panel);
+    }
+  }
+
+  function liveResizePanelMesh(panel) {
+    const mesh = panelMeshMap[panel.id];
+    const center = panelWorldCenter(panel);
+    if (mesh) {
+      mesh.scale.set(panel.width / mesh.geometry.parameters.width, panel.height / mesh.geometry.parameters.height, 1);
+      mesh.position.copy(center);
+    }
+    if (panel.id === selectedPanelId) {
+      if (selectionOutline) {
+        selectionOutline.scale.copy(mesh ? mesh.scale : new THREE.Vector3(1, 1, 1));
+        selectionOutline.position.copy(center);
+      }
+      updateHandlePositions(panel);
+    }
+  }
+
+  function liveRotatePanelMesh(panel) {
+    const mesh = panelMeshMap[panel.id];
+    const rotY = panelMeshRotationY(panel);
+    if (mesh) mesh.rotation.y = rotY;
+    if (panel.id === selectedPanelId) {
+      if (selectionOutline) selectionOutline.rotation.y = rotY;
+      updateHandlePositions(panel);
+    }
+  }
+
+  // ---- Selection visuals: a wireframe outline plus a resize handle (top-right corner) and a
+  // rotate handle (floating just above the panel), rebuilt whenever selection changes. ----
+
+  function rebuildSelectionVisuals() {
+    removeSelectionVisuals();
+    if (!selectedPanelId) return;
+    const panel = findPanel(selectedPanelId);
+    if (!panel) { selectedPanelId = null; return; }
+    buildSelectionVisuals(panel);
+  }
+
+  function removeSelectionVisuals() {
+    if (selectionOutline) { scene.remove(selectionOutline); selectionOutline = null; }
+    if (handleMeshes) {
+      scene.remove(handleMeshes.resize);
+      scene.remove(handleMeshes.rotate);
+      handleMeshes = null;
+    }
+  }
+
+  function buildSelectionVisuals(panel) {
+    const outlineGeo = new THREE.EdgesGeometry(new THREE.PlaneGeometry(panel.width, panel.height));
+    selectionOutline = new THREE.LineSegments(outlineGeo, new THREE.LineBasicMaterial({ color: 0x3b82f6 }));
+    selectionOutline.position.copy(panelWorldCenter(panel));
+    selectionOutline.rotation.y = panelMeshRotationY(panel);
+    scene.add(selectionOutline);
+
+    const resizeHandle = new THREE.Mesh(
+      new THREE.SphereGeometry(0.6, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0x3b82f6 })
+    );
+    const rotateHandle = new THREE.Mesh(
+      new THREE.SphereGeometry(0.6, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0x22c55e })
+    );
+    handleMeshes = { resize: resizeHandle, rotate: rotateHandle };
+    scene.add(resizeHandle);
+    scene.add(rotateHandle);
+    updateHandlePositions(panel);
+  }
+
+  function updateHandlePositions(panel) {
+    if (!handleMeshes) return;
+    const center = panelWorldCenter(panel);
+    const right = panelRightVector(panel);
+    const normal = panelNormal(panel);
+    const halfW = panel.width / 2;
+    const halfH = panel.height / 2;
+
+    handleMeshes.resize.position.copy(
+      center.clone().add(right.clone().multiplyScalar(halfW)).add(new THREE.Vector3(0, halfH, 0))
+    );
+    handleMeshes.rotate.position.copy(
+      center.clone().add(new THREE.Vector3(0, halfH + 2, 0)).add(normal.clone().multiplyScalar(0.5))
+    );
   }
 
   function refresh() {
@@ -249,15 +549,21 @@ const Viewer3D = (() => {
   }
 
   function addImagePanelsToScene() {
+    panelMeshMap = {};
     (project.imagePanels || []).forEach(panel => {
       const texture = new THREE.TextureLoader().load(panel.dataUrl);
       const mat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, transparent: true });
       const geo = new THREE.PlaneGeometry(panel.width, panel.height);
       const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(toSceneX(panel.x), panel.heightOffGround + panel.height / 2, toSceneZ(panel.y));
-      mesh.rotation.y = -(panel.rotationY * Math.PI) / 180;
+      mesh.position.copy(panelWorldCenter(panel));
+      mesh.rotation.y = panelMeshRotationY(panel);
+      mesh.userData.panelId = panel.id;
       scene.add(mesh);
+      panelMeshMap[panel.id] = mesh;
     });
+
+    if (selectedPanelId && !panelMeshMap[selectedPanelId]) selectedPanelId = null;
+    rebuildSelectionVisuals();
   }
 
   function updateCameraPosition() {
@@ -294,7 +600,7 @@ const Viewer3D = (() => {
     if (!file || !project) return;
     const reader = new FileReader();
     reader.onload = (evt) => {
-      project.imagePanels.push({
+      const panel = {
         id: uid('panel'),
         dataUrl: evt.target.result,
         x: project.footprintWidth / 2,
@@ -303,7 +609,9 @@ const Viewer3D = (() => {
         width: 12,
         height: 12,
         rotationY: 0
-      });
+      };
+      project.imagePanels.push(panel);
+      selectedPanelId = panel.id; // select it immediately so its move/resize/rotate handles show up
       saveState(state);
       refresh();
     };
