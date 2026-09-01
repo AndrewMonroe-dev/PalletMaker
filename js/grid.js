@@ -1111,13 +1111,16 @@ const Grid = (() => {
     render();
   }
 
+  // Returns true/false so callers (the 2D angle field, the 3D rotate handle) can tell the user
+  // when a rotation was rejected instead of it just silently not sticking.
   function setGroupAngle(groupId, angle) {
     const group = project.groups.find(g => g.id === groupId);
-    if (!group) return;
+    if (!group) return false;
     const normalized = ((angle % 360) + 360) % 360;
     const before = snapshotProject();
     const ok = tryApplyGroupTransform(group, group.centerX, group.centerY, normalized);
     if (ok) pushUndo(before);
+    return ok;
   }
 
   function tryApplyGroupTransform(group, centerX, centerY, angle) {

@@ -306,7 +306,8 @@ const Viewer3D = (() => {
     dragOp3d = {
       type: 'rotate', panelId: panel.id,
       plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -centerY),
-      moved: false, startRotationY: panel.rotationY
+      moved: false, startRotationY: panel.rotationY,
+      startClientX: e.clientX, startClientY: e.clientY
     };
   }
 
@@ -319,7 +320,13 @@ const Viewer3D = (() => {
     const dz = point.z - center.z;
     if (Math.hypot(dx, dz) < 0.01) return;
     const newRotationY = -(Math.atan2(dx, dz) * 180) / Math.PI;
-    if (Math.abs(newRotationY - dragOp3d.startRotationY) > 0.5) dragOp3d.moved = true;
+    // "Moved" has to be real cursor movement in screen space -- comparing the new absolute
+    // bearing against the pre-drag rotation would compare two unrelated quantities (a compass
+    // direction vs. a persisted angle) and could stay under threshold by coincidence even after a
+    // large, real drag, silently dropping the commit on mouseup.
+    if (Math.abs(e.clientX - dragOp3d.startClientX) > 3 || Math.abs(e.clientY - dragOp3d.startClientY) > 3) {
+      dragOp3d.moved = true;
+    }
     panel.rotationY = newRotationY;
     liveRotatePanelMesh(panel);
   }
@@ -545,7 +552,7 @@ const Viewer3D = (() => {
     });
   }
 
-  function startGroupRotateDrag3D() {
+  function startGroupRotateDrag3D(e) {
     if (!selectedGroupId3D) return;
     const group = project.groups.find(g => g.id === selectedGroupId3D);
     if (!group) return;
@@ -555,7 +562,8 @@ const Viewer3D = (() => {
       plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
       previewAngle: group.angle,
       moved: false,
-      startAngle: group.angle
+      startClientX: e.clientX,
+      startClientY: e.clientY
     };
   }
 
@@ -571,7 +579,12 @@ const Viewer3D = (() => {
     if (Math.hypot(dx, dz) < 0.01) return;
 
     const angle = -((Math.atan2(dx, dz) * 180) / Math.PI);
-    if (Math.abs(angle - dragOp3d.startAngle) > 0.5) dragOp3d.moved = true;
+    // See doRotateDrag's comment -- "moved" must be real cursor movement in screen space, not a
+    // comparison between an absolute bearing and the group's pre-drag angle (unrelated
+    // quantities, could stay under threshold by coincidence and silently drop the commit).
+    if (Math.abs(e.clientX - dragOp3d.startClientX) > 3 || Math.abs(e.clientY - dragOp3d.startClientY) > 3) {
+      dragOp3d.moved = true;
+    }
     dragOp3d.previewAngle = angle;
 
     // Live-reposition the real box meshes (and the highlight/handle) at the preview angle --
@@ -602,7 +615,8 @@ const Viewer3D = (() => {
     if (!op.moved) return;
     // The single real mutation: collision-checked, undo-tracked, and it snapshots the TRUE
     // pre-drag state itself -- nothing above ever touched the persisted group.angle.
-    Grid.setGroupAngle(op.groupId, op.previewAngle);
+    const ok = Grid.setGroupAngle(op.groupId, op.previewAngle);
+    if (!ok) alert('That rotation would overlap something else or leave the floor. Reverted.');
     saveState(state);
     refresh();
   }
@@ -632,7 +646,8 @@ const Viewer3D = (() => {
         <p class="empty-state">Drag the green handle above the group to rotate freely.</p>
       `;
       document.getElementById('viewer3dGroupAngle').addEventListener('change', (e) => {
-        Grid.setGroupAngle(group.id, parseFloat(e.target.value) || 0);
+        const ok = Grid.setGroupAngle(group.id, parseFloat(e.target.value) || 0);
+        if (!ok) alert('That rotation would overlap something else or leave the floor. Reverted.');
         saveState(state);
         refresh();
       });
