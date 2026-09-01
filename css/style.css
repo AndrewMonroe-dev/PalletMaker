@@ -475,6 +475,21 @@ select {
 #viewer3dCanvas:active { cursor: grabbing; }
 #viewer3dCanvas canvas { display: block; width: 100%; height: 100%; }
 
+.viewer3d-light-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.viewer3d-light-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+.viewer3d-light-controls input[type="range"] { width: 100%; }
+
 .viewer3d-panel-list {
   display: flex;
   flex-direction: column;

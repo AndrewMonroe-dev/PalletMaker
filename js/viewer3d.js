@@ -18,6 +18,11 @@ const Viewer3D = (() => {
   let elevation = Math.PI / 6;
   let radius = 100;
 
+  // ---- Lighting ----
+  let dirLight = null;
+  let lightAzimuth = 45; // degrees, matches the sliders' default values in index.html
+  let lightElevation = 55;
+
   // ---- Image panel selection/manipulation state ----
   const MIN_PANEL_SIZE = 1; // inches
   let panelMeshMap = {};       // panel id -> its plane mesh, rebuilt every buildScene()
@@ -31,6 +36,14 @@ const Viewer3D = (() => {
     document.getElementById('viewer3dAddImage').addEventListener('change', handleAddImage);
     document.getElementById('viewer3dExportBtn').addEventListener('click', handleExportImage);
     document.getElementById('viewer3dPrintBtn').addEventListener('click', handlePrintImage);
+    document.getElementById('viewer3dLightAzimuth').addEventListener('input', (e) => {
+      lightAzimuth = parseFloat(e.target.value) || 0;
+      updateLightPosition();
+    });
+    document.getElementById('viewer3dLightElevation').addEventListener('input', (e) => {
+      lightElevation = parseFloat(e.target.value) || 0;
+      updateLightPosition();
+    });
     bindCanvasInteraction();
     bindWindowResize();
   }
@@ -417,19 +430,43 @@ const Viewer3D = (() => {
 
     renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     renderer.setSize(width, height);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
-    dirLight.position.set(1, 2, 1);
-    scene.add(dirLight);
-
     const maxDim = Math.max(project.footprintWidth, project.footprintDepth);
+
+    // Ambient is deliberately low relative to the directional light -- the floor's dark theme
+    // color means a shadow only reads as visibly darker when the lit/shadowed contrast is strong;
+    // too much ambient fill washes the shadow out to invisible against it.
+    scene.add(new THREE.AmbientLight(0xffffff, 0.22));
+    dirLight = new THREE.DirectionalLight(0xffffff, 1.1);
+    dirLight.castShadow = true;
+    // Shadow camera frustum sized to comfortably cover the whole floor from any light angle, and
+    // far enough to reach the light's own distance (set by updateLightPosition below) plus a
+    // margin -- both scale with the project's footprint, not a fixed guess.
+    const shadowExtent = maxDim * 0.75;
+    dirLight.shadow.camera.left = -shadowExtent;
+    dirLight.shadow.camera.right = shadowExtent;
+    dirLight.shadow.camera.top = shadowExtent;
+    dirLight.shadow.camera.bottom = -shadowExtent;
+    dirLight.shadow.camera.near = 1;
+    dirLight.shadow.camera.far = maxDim * 5 + 400;
+    dirLight.shadow.mapSize.width = 1536;
+    dirLight.shadow.mapSize.height = 1536;
+    dirLight.shadow.bias = -0.0005;
+    // Changing the shadow camera's frustum properties above doesn't take effect until its
+    // projection matrix is recomputed -- without this it silently keeps THREE's tiny default
+    // (+-5) frustum and the shadow map ends up not actually covering the scene.
+    dirLight.shadow.camera.updateProjectionMatrix();
+    scene.add(dirLight);
+    updateLightPosition();
 
     const floorGeo = new THREE.PlaneGeometry(project.footprintWidth, project.footprintDepth);
     const floorMat = new THREE.MeshStandardMaterial({ color: 0x1d2026, side: THREE.DoubleSide });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
     scene.add(floor);
 
     const divisions = Math.max(1, Math.round(maxDim / 6));
@@ -545,7 +582,10 @@ const Viewer3D = (() => {
     // back maps to -Z, left/right sides share the one uploaded side image (+X/-X).
     const materials = [sideMat, sideMat, flatMat, flatMat, frontMat, backMat];
     const geo = new THREE.BoxGeometry(width, height, depth);
-    return new THREE.Mesh(geo, materials);
+    const mesh = new THREE.Mesh(geo, materials);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true; // a case sitting in another case's shadow should darken too
+    return mesh;
   }
 
   // Samples the average color of an uploaded photo (via an offscreen canvas) so the box's
@@ -597,6 +637,26 @@ const Viewer3D = (() => {
       radius * Math.cos(azimuth) * Math.cos(elevation)
     );
     camera.lookAt(0, targetY, 0);
+  }
+
+  // Positions the directional light on a sphere around the scene from lightAzimuth/lightElevation
+  // (set by the Lighting sliders) -- same spherical setup as updateCameraPosition above, just
+  // aimed at the light itself rather than the camera. Its shadow camera automatically tracks this
+  // position every frame, so no frustum re-sizing is needed here.
+  function updateLightPosition() {
+    if (!dirLight || !project) return;
+    const maxDim = Math.max(project.footprintWidth, project.footprintDepth);
+    const dist = maxDim * 1.5 + 60;
+    const targetY = maxDim / 6;
+    const azRad = (lightAzimuth * Math.PI) / 180;
+    const elRad = (lightElevation * Math.PI) / 180;
+    dirLight.position.set(
+      dist * Math.sin(azRad) * Math.cos(elRad),
+      targetY + dist * Math.sin(elRad),
+      dist * Math.cos(azRad) * Math.cos(elRad)
+    );
+    dirLight.target.position.set(0, targetY, 0);
+    dirLight.target.updateMatrixWorld();
   }
 
   function startRenderLoop() {
