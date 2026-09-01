@@ -24,6 +24,9 @@ const Grid = (() => {
   let dragOp = null; // in-progress group move/rotate drag state
   let creatingNew = false; // true while the "create/import a project" form is forced open
 
+  let dragPreviewPayload = null; // the palette item currently being dragged over the canvas, if any
+  let dragPreviewEl = null;      // the live size/position ghost box tracking it
+
   let undoStack = []; // per-active-project, in-memory only (not persisted, doesn't survive reload)
   let redoStack = [];
   const UNDO_LIMIT = 50;
@@ -360,6 +363,14 @@ const Grid = (() => {
 
     chip.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData('application/json', JSON.stringify(payload));
+      // Custom drag data (application/json) can't be read back during dragover -- browsers only
+      // expose it on drop, for security. Stash it here instead so the live size/position preview
+      // knows what's being dragged while it's still in the air.
+      dragPreviewPayload = payload;
+    });
+    chip.addEventListener('dragend', () => {
+      dragPreviewPayload = null;
+      removeDragPreview();
     });
 
     return chip;
@@ -383,7 +394,17 @@ const Grid = (() => {
     canvas.style.backgroundSize = `${scale}px ${scale}px`;
 
     canvas.innerHTML = '';
-    canvas.ondragover = (e) => e.preventDefault();
+    dragPreviewEl = null; // the node above was just destroyed along with everything else
+    canvas.ondragover = (e) => {
+      e.preventDefault();
+      updateDragPreview(e);
+    };
+    canvas.ondragleave = (e) => {
+      // dragleave also fires when moving from the canvas onto one of its own child elements
+      // (a stack box, the preview itself) -- only treat it as "left the canvas" when the related
+      // target genuinely isn't inside it anymore.
+      if (!e.relatedTarget || !canvas.contains(e.relatedTarget)) removeDragPreview();
+    };
     canvas.ondrop = handleDrop;
 
     const ungroupedStacks = project.stacks.filter(s => !s.groupId);
@@ -532,6 +553,7 @@ const Grid = (() => {
 
   function handleDrop(e) {
     e.preventDefault();
+    removeDragPreview();
     const raw = e.dataTransfer.getData('application/json');
     if (!raw) return;
     const payload = JSON.parse(raw);
@@ -620,6 +642,75 @@ const Grid = (() => {
     });
     saveState(state);
     render();
+  }
+
+  // Live ghost box shown while dragging a palette item over the canvas, sized to the item's real
+  // footprint and positioned exactly where it would land -- same resolution order as handleDrop
+  // (stackable target first, then floor edge-snap), so what you see is what you'll get on drop.
+  function updateDragPreview(e) {
+    if (!dragPreviewPayload || !project) return;
+
+    const canvas = document.getElementById('gridCanvas');
+    const rect = canvas.getBoundingClientRect();
+    const dropXIn = (e.clientX - rect.left) / scale;
+    const dropYIn = (e.clientY - rect.top) / scale;
+    const footprintW = dragPreviewPayload.footprintW;
+    const footprintD = dragPreviewPayload.footprintD;
+
+    const rawX = snap(dropXIn);
+    const rawY = snap(dropYIn);
+    const placement = resolvePlacement(footprintW, footprintD, rawX, rawY, null);
+
+    let x, y, w, d, valid;
+    if (placement && placement.mode === 'base') {
+      // Merging into an existing base column -- highlight the whole target it'll absorb into.
+      ({ x, y, footprintW: w, footprintD: d } = placement.targetStack);
+      valid = true;
+    } else if (placement && placement.mode === 'merge-topper') {
+      x = placement.targetStack.x + placement.topper.dx;
+      y = placement.targetStack.y + placement.topper.dy;
+      w = placement.topper.footprintW;
+      d = placement.topper.footprintD;
+      valid = true;
+    } else if (placement && placement.mode === 'new-topper') {
+      x = placement.targetStack.x + placement.localX;
+      y = placement.targetStack.y + placement.localY;
+      w = footprintW;
+      d = footprintD;
+      valid = true;
+    } else if (placement && placement.blocked) {
+      x = rawX;
+      y = rawY;
+      w = footprintW;
+      d = footprintD;
+      valid = false;
+    } else {
+      const snapped = snapToNeighborEdges(rawX, rawY, footprintW, footprintD, null);
+      x = snapped.x;
+      y = snapped.y;
+      w = footprintW;
+      d = footprintD;
+      valid = !(x < 0 || y < 0 || x + w > project.footprintWidth || y + d > project.footprintDepth) &&
+        !collidesWithAnything(aabbCorners(x, y, w, d), { excludeStackId: null, excludeGroupId: null });
+    }
+
+    if (!dragPreviewEl) {
+      dragPreviewEl = document.createElement('div');
+      dragPreviewEl.className = 'grid-drag-preview';
+      canvas.appendChild(dragPreviewEl);
+    }
+    dragPreviewEl.style.left = `${x * scale}px`;
+    dragPreviewEl.style.top = `${y * scale}px`;
+    dragPreviewEl.style.width = `${w * scale}px`;
+    dragPreviewEl.style.height = `${d * scale}px`;
+    dragPreviewEl.classList.toggle('invalid', !valid);
+  }
+
+  function removeDragPreview() {
+    if (dragPreviewEl) {
+      dragPreviewEl.remove();
+      dragPreviewEl = null;
+    }
   }
 
   // COLLISION_EPSILON absorbs floating-point drift (e.g. 4 * 3.4 doesn't land on the exact same

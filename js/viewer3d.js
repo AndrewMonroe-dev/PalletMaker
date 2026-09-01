@@ -30,7 +30,29 @@ const Viewer3D = (() => {
     state = appState;
     document.getElementById('viewer3dAddImage').addEventListener('change', handleAddImage);
     document.getElementById('viewer3dExportBtn').addEventListener('click', handleExportImage);
+    document.getElementById('viewer3dPrintBtn').addEventListener('click', handlePrintImage);
     bindCanvasInteraction();
+    bindWindowResize();
+  }
+
+  // The canvas now fills as much of the window as CSS allows (see #viewer3dCanvas's height:82vh),
+  // so it needs to track window resizes, not just its size at the moment the scene was built.
+  function bindWindowResize() {
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(handleWindowResize, 150);
+    });
+  }
+
+  function handleWindowResize() {
+    if (!project || !renderer || !camera) return;
+    const container = document.getElementById('viewer3dCanvas');
+    const width = container.clientWidth || 700;
+    const height = container.clientHeight || 500;
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+    renderer.setSize(width, height);
   }
 
   function bindCanvasInteraction() {
@@ -386,7 +408,7 @@ const Viewer3D = (() => {
     container.innerHTML = '';
 
     const width = container.clientWidth || 700;
-    const height = 500;
+    const height = container.clientHeight || 500;
 
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0a0c0f);
@@ -744,6 +766,48 @@ const Viewer3D = (() => {
     document.body.appendChild(a);
     a.click();
     a.remove();
+  }
+
+  // Prints the current 3D view. A canvas can't be targeted by print CSS directly (and this page
+  // has plenty of other on-screen chrome to exclude), so the rendered frame is captured as a PNG
+  // and handed to a fresh, print-only document instead -- the browser's print dialog opens
+  // automatically once that image has actually loaded.
+  function handlePrintImage() {
+    if (!renderer || !scene || !camera) return;
+    renderer.render(scene, camera);
+    const dataUrl = renderer.domElement.toDataURL('image/png');
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert('Your browser blocked the print window. Allow pop-ups for this site and try again.');
+      return;
+    }
+    const title = `${project.name || 'Pallet'} - 3D View`;
+    printWindow.document.write(`<!DOCTYPE html>
+<html>
+<head>
+<title>${title}</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; }
+  body { display: flex; align-items: center; justify-content: center; }
+  img { max-width: 100%; max-height: 100vh; }
+  @media print {
+    body { height: auto; }
+    img { width: 100%; height: auto; max-height: none; }
+  }
+</style>
+</head>
+<body>
+  <img src="${dataUrl}" alt="${title}">
+  <script>
+    document.querySelector('img').addEventListener('load', () => {
+      window.focus();
+      window.print();
+    });
+  <\/script>
+</body>
+</html>`);
+    printWindow.document.close();
   }
 
   return { init, refresh };

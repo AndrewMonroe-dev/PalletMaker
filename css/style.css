@@ -364,6 +364,19 @@ select {
   border: 1px solid rgba(255,255,255,0.7);
 }
 
+.grid-drag-preview {
+  position: absolute;
+  pointer-events: none;
+  box-sizing: border-box;
+  z-index: 10;
+  border: 2px dashed var(--accent);
+  background: rgba(59,130,246,0.2);
+}
+.grid-drag-preview.invalid {
+  border-color: var(--danger);
+  background: rgba(239,68,68,0.2);
+}
+
 .grid-stack .stack-badge {
   margin: 2px;
   background: rgba(0,0,0,0.75);
@@ -452,8 +465,8 @@ select {
 
 #viewer3dCanvas {
   width: 100%;
-  max-width: 720px;
-  height: 500px;
+  height: 82vh;
+  min-height: 500px;
   background: #0a0c0f;
   border: 2px solid var(--border);
   border-radius: 4px;
