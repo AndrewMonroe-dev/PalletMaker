@@ -28,6 +28,35 @@
   Grid.init(appState);
   Viewer3D.init(appState);
 
+  // ---- Save to a real file on this computer (Chrome/Edge only) ----
+  // Additive to localStorage, never a replacement -- every save point below writes to both.
+  const statusEl = document.getElementById('fileSyncStatus');
+  const btnChoose = document.getElementById('btnChooseSaveFile');
+  const btnReconnect = document.getElementById('btnReconnectSaveFile');
+
+  function renderFileSyncStatus(status, fileName) {
+    statusEl.classList.remove('hidden');
+    btnChoose.classList.add('hidden');
+    btnReconnect.classList.add('hidden');
+    if (status === 'unsupported') {
+      statusEl.textContent = 'File save: not supported in this browser (use Chrome or Edge)';
+    } else if (status === 'disconnected') {
+      statusEl.textContent = '';
+      statusEl.classList.add('hidden');
+      btnChoose.classList.remove('hidden');
+    } else if (status === 'connected') {
+      statusEl.textContent = `Saving to: ${fileName}`;
+      statusEl.title = 'Every change is automatically written to this file on your computer.';
+    } else if (status === 'needs-permission') {
+      statusEl.textContent = `Not saving to ${fileName} -- permission needed`;
+      btnReconnect.classList.remove('hidden');
+    }
+  }
+
+  FileSync.init(renderFileSyncStatus).then(() => FileSync.write(appState));
+  btnChoose.addEventListener('click', () => FileSync.chooseFile().then(() => FileSync.write(appState)));
+  btnReconnect.addEventListener('click', () => FileSync.reconnect().then(() => FileSync.write(appState)));
+
   // ---- Full backup / restore (everything: item types, cases, every project) ----
   // Distinct from the Grid tab's own Export/Import JSON, which only covers the single active
   // project -- this is a complete snapshot of appState, so a lost/corrupted localStorage never

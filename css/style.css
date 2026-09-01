@@ -37,7 +37,16 @@ body {
 
 .tabs { display: flex; gap: 6px; }
 
-.app-header-backup { display: flex; gap: 8px; margin-left: auto; }
+.app-header-backup { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+.file-sync-status {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.file-sync-status.hidden,
+#btnChooseSaveFile.hidden,
+#btnReconnectSaveFile.hidden { display: none; }
 
 .tab-btn {
   background: transparent;

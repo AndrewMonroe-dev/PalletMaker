@@ -16,6 +16,9 @@
     <button class="tab-btn" data-tab="viewer3d">3D Viewer</button>
   </nav>
   <div class="app-header-backup">
+    <span id="fileSyncStatus" class="file-sync-status hidden"></span>
+    <button id="btnChooseSaveFile" class="btn-secondary hidden" title="Pick a file on your computer to keep automatically saved">Save to Computer</button>
+    <button id="btnReconnectSaveFile" class="btn-secondary hidden" title="Re-grant write access to your chosen save file">Reconnect File</button>
     <button id="btnExportAllData" class="btn-secondary" title="Download everything -- item types, cases, and all projects -- as one backup file">Backup All</button>
     <label class="file-btn" title="Replace everything with a previously downloaded backup file">
       Restore Backup
@@ -306,6 +309,7 @@
 
 <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
 <script src="js/storage.js"></script>
+<script src="js/fileSync.js"></script>
 <script src="js/itemTypes.js"></script>
 <script src="js/cases.js"></script>
 <script src="js/grid.js"></script>

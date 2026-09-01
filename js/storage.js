@@ -16,6 +16,10 @@ function loadState() {
 
 function saveState(state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  // Mirror out to a real file on disk too, if the user has connected one (fileSync.js) -- a
+  // silent no-op when unsupported/not connected, so this is safe to call from every existing
+  // saveState() call site with no other changes needed.
+  if (typeof FileSync !== 'undefined') FileSync.write(state);
 }
 
 function defaultState() {
