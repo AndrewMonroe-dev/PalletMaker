@@ -442,7 +442,22 @@ const Grid = (() => {
       render();
     });
 
+    el.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      addDuplicateTopItem(stack.items);
+    });
+
     return el;
+  }
+
+  // Double-clicking a stack/topper adds one more of whatever item is currently on top of it --
+  // the same result as dragging that same case/unit from the palette and dropping it there.
+  function addDuplicateTopItem(items) {
+    pushUndo(snapshotProject());
+    items.push({ ...items[items.length - 1] });
+    saveState(state);
+    render();
   }
 
   // A topper's box on the 2D floor: positioned within its parent stack's rectangle at the
@@ -472,6 +487,11 @@ const Grid = (() => {
       selectedGroupId = null;
       multiSelectIds.clear();
       render();
+    });
+    el.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      addDuplicateTopItem(topper.items);
     });
 
     return el;
@@ -1051,6 +1071,11 @@ const Grid = (() => {
       multiSelectIds.clear();
       render();
     });
+    el.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      addDuplicateTopItem(stack.items);
+    });
 
     return el;
   }
@@ -1087,6 +1112,11 @@ const Grid = (() => {
       selectedGroupId = null;
       multiSelectIds.clear();
       render();
+    });
+    el.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      addDuplicateTopItem(topper.items);
     });
 
     return el;
