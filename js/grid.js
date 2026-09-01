@@ -367,6 +367,15 @@ const Grid = (() => {
       // expose it on drop, for security. Stash it here instead so the live size/position preview
       // knows what's being dragged while it's still in the air.
       dragPreviewPayload = payload;
+
+      // The browser's default drag image is a screenshot of the whole chip -- swatch, name, and
+      // dimensions text. Swap it for a small ghost that's just the item's own shape (its real
+      // width:depth aspect ratio, not the fixed little swatch square), so what follows the
+      // cursor actually reads as "the product," not a caption card.
+      const ghost = buildDragGhostEl(payload);
+      e.dataTransfer.setDragImage(ghost.el, ghost.w / 2, ghost.d / 2);
+      // setDragImage snapshots synchronously; safe to clean up on the next tick.
+      setTimeout(() => ghost.el.remove(), 0);
     });
     chip.addEventListener('dragend', () => {
       dragPreviewPayload = null;
@@ -374,6 +383,33 @@ const Grid = (() => {
     });
 
     return chip;
+  }
+
+  // A small, offscreen element shaped like the dragged item's real footprint (width:depth
+  // proportion, capped to a reasonable on-screen size), used as the native drag image so the
+  // cursor carries just the product's shape/color instead of the whole palette chip.
+  function buildDragGhostEl(payload) {
+    const MAX_PX = 60;
+    const MIN_PX = 16;
+    const scaleFactor = MAX_PX / Math.max(payload.footprintW, payload.footprintD);
+    const w = Math.max(MIN_PX, payload.footprintW * scaleFactor);
+    const d = Math.max(MIN_PX, payload.footprintD * scaleFactor);
+
+    const el = document.createElement('div');
+    el.style.position = 'fixed';
+    el.style.top = '-1000px';
+    el.style.left = '-1000px';
+    el.style.width = `${w}px`;
+    el.style.height = `${d}px`;
+    el.style.borderRadius = '3px';
+    el.style.border = '1px solid rgba(255,255,255,0.5)';
+    if (payload.swatch) {
+      el.style.background = payload.swatch.image
+        ? `url(${payload.swatch.image}) center/cover`
+        : payload.swatch.color;
+    }
+    document.body.appendChild(el);
+    return { el, w, d };
   }
 
   function computeScale() {
