@@ -388,6 +388,15 @@ const Grid = (() => {
     chip.addEventListener('dragend', () => {
       dragPreviewPayload = null;
       removeDragPreview();
+      // Safety net for the same repaint-suppression quirk renderAfterDrop() already works around:
+      // on some browsers/machines a single requestAnimationFrame right after 'drop' can still land
+      // before the native drag session has actually finished tearing down, so the deferred render
+      // silently gets swallowed too -- this recurred after the initial single-rAF fix. 'dragend' is
+      // the one event guaranteed to fire only once the whole drag session (source and target side)
+      // is fully over, so re-rendering here as well guarantees the drop becomes visible regardless
+      // of how long that teardown actually takes. A no-op re-render if renderAfterDrop() already
+      // painted first.
+      if (project) render();
     });
 
     return chip;
@@ -669,7 +678,12 @@ const Grid = (() => {
   // above already runs synchronously so the data itself is never at risk; only the visual update
   // is deferred one frame, right after the browser's own drag cleanup, so it reliably paints.
   function renderAfterDrop() {
-    requestAnimationFrame(() => render());
+    // A single requestAnimationFrame turned out to not always be enough -- reported recurring on a
+    // real machine even after the original fix. Nesting a second rAF inside the first pushes the
+    // render to the start of a LATER frame rather than just "sometime this frame," which is more
+    // reliable at landing after the browser's own drag-session paint suppression has actually
+    // lifted. The dragend handler above is a second, independent safety net on top of this.
+    requestAnimationFrame(() => requestAnimationFrame(() => render()));
   }
 
   // Live ghost box shown while dragging a palette item over the canvas, sized to the item's real
