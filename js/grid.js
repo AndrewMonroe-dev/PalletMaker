@@ -10,7 +10,7 @@ const Grid = (() => {
   const SNAP_IN = 1;
   const PX_PER_IN_MAX = 40; // ceiling so a small floor doesn't get absurdly huge cells
   const MERGE_OVERLAP_FRACTION = 0.8; // how much of the footprint must overlap to count as "landed on it" and merge
-  const EDGE_SNAP_TOLERANCE_IN = 2;
+  const EDGE_SNAP_TOLERANCE_PX = 14; // screen pixels, not inches -- see edgeSnapToleranceIn() below
   const ZOOM_MIN = 0.25;
   const ZOOM_MAX = 4;
   const ZOOM_STEP = 0.25;
@@ -1010,24 +1010,24 @@ const Grid = (() => {
       const vOverlap = Math.min(y + d, r.y + r.d) - Math.max(y, r.y);
       if (vOverlap > 0) {
         const dRight = Math.abs(x - (r.x + r.w));
-        if (dRight <= EDGE_SNAP_TOLERANCE_IN && (!bestX || dRight < bestX.dist)) bestX = { dist: dRight, value: r.x + r.w };
+        if (dRight <= edgeSnapToleranceIn() && (!bestX || dRight < bestX.dist)) bestX = { dist: dRight, value: r.x + r.w };
         const dLeft = Math.abs((x + w) - r.x);
-        if (dLeft <= EDGE_SNAP_TOLERANCE_IN && (!bestX || dLeft < bestX.dist)) bestX = { dist: dLeft, value: r.x - w };
+        if (dLeft <= edgeSnapToleranceIn() && (!bestX || dLeft < bestX.dist)) bestX = { dist: dLeft, value: r.x - w };
       }
       const hOverlap = Math.min(x + w, r.x + r.w) - Math.max(x, r.x);
       if (hOverlap > 0) {
         const dBelow = Math.abs(y - (r.y + r.d));
-        if (dBelow <= EDGE_SNAP_TOLERANCE_IN && (!bestY || dBelow < bestY.dist)) bestY = { dist: dBelow, value: r.y + r.d };
+        if (dBelow <= edgeSnapToleranceIn() && (!bestY || dBelow < bestY.dist)) bestY = { dist: dBelow, value: r.y + r.d };
         const dAbove = Math.abs((y + d) - r.y);
-        if (dAbove <= EDGE_SNAP_TOLERANCE_IN && (!bestY || dAbove < bestY.dist)) bestY = { dist: dAbove, value: r.y - d };
+        if (dAbove <= edgeSnapToleranceIn() && (!bestY || dAbove < bestY.dist)) bestY = { dist: dAbove, value: r.y - d };
       }
     });
 
     // Also snap flush against the surface's own edges.
-    if (Math.abs(x) <= EDGE_SNAP_TOLERANCE_IN && (!bestX || Math.abs(x) < bestX.dist)) bestX = { dist: Math.abs(x), value: 0 };
-    if (Math.abs(x - maxX) <= EDGE_SNAP_TOLERANCE_IN && (!bestX || Math.abs(x - maxX) < bestX.dist)) bestX = { dist: Math.abs(x - maxX), value: maxX };
-    if (Math.abs(y) <= EDGE_SNAP_TOLERANCE_IN && (!bestY || Math.abs(y) < bestY.dist)) bestY = { dist: Math.abs(y), value: 0 };
-    if (Math.abs(y - maxY) <= EDGE_SNAP_TOLERANCE_IN && (!bestY || Math.abs(y - maxY) < bestY.dist)) bestY = { dist: Math.abs(y - maxY), value: maxY };
+    if (Math.abs(x) <= edgeSnapToleranceIn() && (!bestX || Math.abs(x) < bestX.dist)) bestX = { dist: Math.abs(x), value: 0 };
+    if (Math.abs(x - maxX) <= edgeSnapToleranceIn() && (!bestX || Math.abs(x - maxX) < bestX.dist)) bestX = { dist: Math.abs(x - maxX), value: maxX };
+    if (Math.abs(y) <= edgeSnapToleranceIn() && (!bestY || Math.abs(y) < bestY.dist)) bestY = { dist: Math.abs(y), value: 0 };
+    if (Math.abs(y - maxY) <= edgeSnapToleranceIn() && (!bestY || Math.abs(y - maxY) < bestY.dist)) bestY = { dist: Math.abs(y - maxY), value: maxY };
 
     // bestX/bestY are already the exact flush coordinate -- re-snapping to the 1in grid would
     // reopen the gap just closed (or push it into a slight overlap) whenever real item dimensions
@@ -1040,6 +1040,15 @@ const Grid = (() => {
 
   function snap(value) {
     return Math.max(0, Math.round(value / SNAP_IN) * SNAP_IN);
+  }
+
+  // A fixed real-world-inch snap tolerance gets brutally hard to hit once zoomed out (2in can be
+  // a couple of screen pixels), and pointlessly loose once zoomed way in -- expressing it as a
+  // fixed number of screen pixels and converting through the current scale keeps "close enough to
+  // snap" equally easy to land at any zoom level. Floored at 0.25in so a print-quality zoom-in
+  // doesn't turn a near-flush drop into a rejected snap either.
+  function edgeSnapToleranceIn() {
+    return Math.max(0.25, EDGE_SNAP_TOLERANCE_PX / scale);
   }
 
   // Axis-aligned rects of everything currently on the floor (ungrouped stacks, plus members of
@@ -1081,22 +1090,22 @@ const Grid = (() => {
       const vOverlap = Math.min(y + d, r.y + r.d) - Math.max(y, r.y);
       if (vOverlap > 0) {
         const dRight = Math.abs(x - (r.x + r.w));
-        if (dRight <= EDGE_SNAP_TOLERANCE_IN && (!bestX || dRight < bestX.dist)) {
+        if (dRight <= edgeSnapToleranceIn() && (!bestX || dRight < bestX.dist)) {
           bestX = { dist: dRight, value: r.x + r.w };
         }
         const dLeft = Math.abs((x + w) - r.x);
-        if (dLeft <= EDGE_SNAP_TOLERANCE_IN && (!bestX || dLeft < bestX.dist)) {
+        if (dLeft <= edgeSnapToleranceIn() && (!bestX || dLeft < bestX.dist)) {
           bestX = { dist: dLeft, value: r.x - w };
         }
       }
       const hOverlap = Math.min(x + w, r.x + r.w) - Math.max(x, r.x);
       if (hOverlap > 0) {
         const dBelow = Math.abs(y - (r.y + r.d));
-        if (dBelow <= EDGE_SNAP_TOLERANCE_IN && (!bestY || dBelow < bestY.dist)) {
+        if (dBelow <= edgeSnapToleranceIn() && (!bestY || dBelow < bestY.dist)) {
           bestY = { dist: dBelow, value: r.y + r.d };
         }
         const dAbove = Math.abs((y + d) - r.y);
-        if (dAbove <= EDGE_SNAP_TOLERANCE_IN && (!bestY || dAbove < bestY.dist)) {
+        if (dAbove <= edgeSnapToleranceIn() && (!bestY || dAbove < bestY.dist)) {
           bestY = { dist: dAbove, value: r.y - d };
         }
       }
