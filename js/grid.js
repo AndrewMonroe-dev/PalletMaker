@@ -997,14 +997,25 @@ const Grid = (() => {
   // perfect drop.
   function snapTopperToSiblingEdges(targetStack, x, y, w, d) {
     const rects = targetStack.toppers.map(t => ({ x: t.dx, y: t.dy, w: t.footprintW, d: t.footprintD }));
+    const tol = edgeSnapToleranceIn();
+    const maxX = targetStack.footprintW - w;
+    const maxY = targetStack.footprintD - d;
+
+    // Prefer a full corner snap against a sibling topper -- see snapToNeighborEdges's identical
+    // rule for why: without it, toppers placed side by side only glue their touching edge
+    // together and leave the other axis wherever the mouse landed.
+    let bestCorner = null;
+    rects.forEach(r => {
+      const c = tryCornerSnap(x, y, w, d, r, tol);
+      if (c && (!bestCorner || c.dist < bestCorner.dist)) bestCorner = c;
+    });
+    if (bestCorner) return { x: clamp(bestCorner.x, 0, maxX), y: clamp(bestCorner.y, 0, maxY) };
 
     // X and Y snapping are tracked independently -- see snapToNeighborEdges for why a shared
     // "closest wins" candidate is wrong (an item already flush on one axis has distance 0 there,
     // which would always beat a genuinely useful snap on the other axis).
     let bestX = null;
     let bestY = null;
-    const maxX = targetStack.footprintW - w;
-    const maxY = targetStack.footprintD - d;
 
     rects.forEach(r => {
       const vOverlap = Math.min(y + d, r.y + r.d) - Math.max(y, r.y);
@@ -1075,14 +1086,58 @@ const Grid = (() => {
     return list;
   }
 
+  // Checks one neighbor rect for a full corner snap: a touching side edge (left/right of it) AND
+  // an aligned leading/trailing edge (front/back flush with it) both within tolerance at once --
+  // i.e. "you're dropping this to continue a flush row/column with that neighbor," not just
+  // "you're near its edge somewhere." Returns the single best-matching corner for this neighbor,
+  // or null if none of the 8 side+align combinations both qualify.
+  function tryCornerSnap(x, y, w, d, r, tol) {
+    const dRight = Math.abs(x - (r.x + r.w));
+    const dLeft = Math.abs((x + w) - r.x);
+    const dFront = Math.abs(y - r.y);
+    const dBack = Math.abs((y + d) - (r.y + r.d));
+    const dBelow = Math.abs(y - (r.y + r.d));
+    const dAbove = Math.abs((y + d) - r.y);
+    const dLeftAlign = Math.abs(x - r.x);
+    const dRightAlign = Math.abs((x + w) - (r.x + r.w));
+
+    const combos = [];
+    if (dRight <= tol && dFront <= tol) combos.push({ dist: dRight + dFront, x: r.x + r.w, y: r.y });
+    if (dRight <= tol && dBack <= tol) combos.push({ dist: dRight + dBack, x: r.x + r.w, y: r.y + r.d - d });
+    if (dLeft <= tol && dFront <= tol) combos.push({ dist: dLeft + dFront, x: r.x - w, y: r.y });
+    if (dLeft <= tol && dBack <= tol) combos.push({ dist: dLeft + dBack, x: r.x - w, y: r.y + r.d - d });
+    if (dBelow <= tol && dLeftAlign <= tol) combos.push({ dist: dBelow + dLeftAlign, x: r.x, y: r.y + r.d });
+    if (dBelow <= tol && dRightAlign <= tol) combos.push({ dist: dBelow + dRightAlign, x: r.x + r.w - w, y: r.y + r.d });
+    if (dAbove <= tol && dLeftAlign <= tol) combos.push({ dist: dAbove + dLeftAlign, x: r.x, y: r.y - d });
+    if (dAbove <= tol && dRightAlign <= tol) combos.push({ dist: dAbove + dRightAlign, x: r.x + r.w - w, y: r.y - d });
+
+    return combos.reduce((best, c) => (!best || c.dist < best.dist) ? c : best, null);
+  }
+
   // If (x,y) is close to sitting flush against a neighbor's edge but not exactly on it, snap it
   // there -- turns "aimed close but missed by an inch" into a clean adjacent placement instead
-  // of a rejected near-overlap or an awkward gap. X and Y snapping are tracked independently
-  // (not one shared "closest wins" candidate) -- an item already flush on one axis has distance
-  // 0 there, which would otherwise always beat a genuinely useful snap on the other axis and
-  // silently discard it.
+  // of a rejected near-overlap or an awkward gap.
   function snapToNeighborEdges(x, y, w, d, excludeStackId) {
     const rects = collectAxisAlignedRects(excludeStackId);
+    const tol = edgeSnapToleranceIn();
+
+    // Prefer a full corner snap (the touching edge AND the leading/trailing edge both close to
+    // one neighbor at once) -- this is what actually produces a flush row or column. Without it,
+    // placing cases side by side only ever glues the touching edge together and leaves each
+    // box's front/back wherever the mouse happened to drop it, so a "flush row" ends up visibly
+    // staggered even though every pair looks edge-to-edge individually.
+    let bestCorner = null;
+    rects.forEach(r => {
+      const c = tryCornerSnap(x, y, w, d, r, tol);
+      if (c && (!bestCorner || c.dist < bestCorner.dist)) bestCorner = c;
+    });
+    if (bestCorner) return { x: bestCorner.x, y: bestCorner.y };
+
+    // Fall back to snapping just one axis to a neighbor whose OTHER axis already overlaps (e.g.
+    // stacking directly behind another case in the same column) -- X and Y are tracked
+    // independently here (not one shared "closest wins" candidate) because an item already flush
+    // on one axis has distance 0 there, which would otherwise always beat a genuinely useful snap
+    // on the other axis and silently discard it.
     let bestX = null;
     let bestY = null;
 
@@ -1090,22 +1145,22 @@ const Grid = (() => {
       const vOverlap = Math.min(y + d, r.y + r.d) - Math.max(y, r.y);
       if (vOverlap > 0) {
         const dRight = Math.abs(x - (r.x + r.w));
-        if (dRight <= edgeSnapToleranceIn() && (!bestX || dRight < bestX.dist)) {
+        if (dRight <= tol && (!bestX || dRight < bestX.dist)) {
           bestX = { dist: dRight, value: r.x + r.w };
         }
         const dLeft = Math.abs((x + w) - r.x);
-        if (dLeft <= edgeSnapToleranceIn() && (!bestX || dLeft < bestX.dist)) {
+        if (dLeft <= tol && (!bestX || dLeft < bestX.dist)) {
           bestX = { dist: dLeft, value: r.x - w };
         }
       }
       const hOverlap = Math.min(x + w, r.x + r.w) - Math.max(x, r.x);
       if (hOverlap > 0) {
         const dBelow = Math.abs(y - (r.y + r.d));
-        if (dBelow <= edgeSnapToleranceIn() && (!bestY || dBelow < bestY.dist)) {
+        if (dBelow <= tol && (!bestY || dBelow < bestY.dist)) {
           bestY = { dist: dBelow, value: r.y + r.d };
         }
         const dAbove = Math.abs((y + d) - r.y);
-        if (dAbove <= edgeSnapToleranceIn() && (!bestY || dAbove < bestY.dist)) {
+        if (dAbove <= tol && (!bestY || dAbove < bestY.dist)) {
           bestY = { dist: dAbove, value: r.y - d };
         }
       }
