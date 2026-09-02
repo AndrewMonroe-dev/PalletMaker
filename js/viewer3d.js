@@ -1241,56 +1241,27 @@ const Viewer3D = (() => {
 
   // ---- Cost/revenue summary ----
 
-  // Every placed item across the floor -- each stack's base column plus everything resting on
-  // top of it as a topper.
-  function getAllPlacedItems() {
-    const items = [];
-    project.stacks.forEach(stack => {
-      items.push(...stack.items);
-      (stack.toppers || []).forEach(topper => items.push(...topper.items));
-    });
-    return items;
-  }
-
+  // Reuses Grid.computeTally() (single source of truth: everything ships as whole cases, loose
+  // units on the floor only count as their own line once they don't add up to one more full
+  // case) rather than re-deriving totals here from raw placed items -- this used to duplicate
+  // that logic and diverge from it once the case/loose-unit conversion was added there.
   function computeTotals() {
-    let totalCost = 0, totalRevenue = 0, totalCases = 0, totalUnits = 0;
-
-    getAllPlacedItems().forEach(item => {
-      if (item.kind === 'case') {
-          const c = Cases.getCase(item.caseId);
-          const it = c ? ItemTypes.getItemType(c.itemTypeId) : null;
-          if (c && it) {
-            const costPerUnit = it.unitsPerCase > 0 ? it.costPerCase / it.unitsPerCase : 0;
-            const marginFraction = Math.min(Math.max(it.marginPct, 0), 99.99) / 100;
-            const retailPerUnit = marginFraction < 1 ? costPerUnit / (1 - marginFraction) : 0;
-            const unitsInCase = c.rows * c.cols * c.layers;
-            totalCost += costPerUnit * unitsInCase;
-            totalRevenue += retailPerUnit * unitsInCase;
-            totalCases += 1;
-            totalUnits += unitsInCase;
-          }
-      } else {
-        const it = ItemTypes.getItemType(item.itemTypeId);
-        if (it) {
-          const costPerUnit = it.unitsPerCase > 0 ? it.costPerCase / it.unitsPerCase : 0;
-          const marginFraction = Math.min(Math.max(it.marginPct, 0), 99.99) / 100;
-          const retailPerUnit = marginFraction < 1 ? costPerUnit / (1 - marginFraction) : 0;
-          totalCost += costPerUnit;
-          totalRevenue += retailPerUnit;
-          totalUnits += 1;
-        }
-      }
+    let totalCost = 0, totalRevenue = 0, totalCases = 0, totalLooseUnits = 0;
+    Grid.computeTally().forEach(r => {
+      totalCost += r.cost;
+      totalRevenue += r.revenue;
+      totalCases += r.cases;
+      totalLooseUnits += r.looseUnits;
     });
-
-    return { totalCost, totalRevenue, totalCases, totalUnits };
+    return { totalCost, totalRevenue, totalCases, totalLooseUnits };
   }
 
   function renderTallySummary() {
     const el = document.getElementById('viewer3dTallySummary');
     const t = computeTotals();
     el.innerHTML = `
-      <div>Cases placed: <strong>${t.totalCases}</strong></div>
-      <div>Units placed: <strong>${t.totalUnits}</strong></div>
+      <div>Total cases: <strong>${t.totalCases}</strong></div>
+      <div>Loose units (not a full case): <strong>${t.totalLooseUnits}</strong></div>
       <div>Total cost: <strong>$${t.totalCost.toFixed(2)}</strong></div>
       <div>Total revenue: <strong>$${t.totalRevenue.toFixed(2)}</strong></div>
     `;

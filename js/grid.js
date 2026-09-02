@@ -2223,60 +2223,74 @@ const Grid = (() => {
     return items;
   }
 
+  // Everything ships as whole cases -- units on the floor are just cases someone broke open, not
+  // a separate SKU-level concept. So tally by ITEM (item type + swatch), not by which specific
+  // Case entity or loose-unit placement produced each one: total up every unit that item
+  // contributed (a placed case's full rows*cols*layers, or 1 per loose unit), then convert that
+  // total back into whole cases using the item type's own units-per-case. Only a genuine leftover
+  // -- units placed that don't add up to one more full case -- gets shown separately; an exact
+  // multiple (e.g. two loose 6-packs of a 12-unit case) silently becomes another whole case.
   function computeTally() {
-    const rows = {};
+    const bySku = {};
+
+    function ensureRow(key, label) {
+      if (!bySku[key]) bySku[key] = { label, totalUnits: 0, unitsPerCase: 0, cost: 0, revenue: 0, missing: 0, missingIsCase: false };
+      return bySku[key];
+    }
 
     getAllPlacedItems().forEach(item => {
-      let key, label, isCase, unitCost, unitRevenue;
-
-        if (item.kind === 'case') {
-          const c = Cases.getCase(item.caseId);
-          const it = c ? ItemTypes.getItemType(c.itemTypeId) : null;
-          if (!c || !it) {
-            key = `missing-case-${item.caseId}`;
-            label = '(deleted case)';
-            isCase = true;
-            unitCost = 0;
-            unitRevenue = 0;
-          } else {
-            key = `case-${c.id}`;
-            label = c.name;
-            isCase = true;
-            const costPerUnit = it.unitsPerCase > 0 ? it.costPerCase / it.unitsPerCase : 0;
-            const marginFraction = Math.min(Math.max(it.marginPct, 0), 99.99) / 100;
-            const retailPerUnit = marginFraction < 1 ? costPerUnit / (1 - marginFraction) : 0;
-            const unitsInCase = c.rows * c.cols * c.layers;
-            unitCost = costPerUnit * unitsInCase;
-            unitRevenue = retailPerUnit * unitsInCase;
-          }
-        } else {
-          const it = ItemTypes.getItemType(item.itemTypeId);
-          const sw = it ? it.palette.find(s => s.id === item.swatchId) : null;
-          if (!it) {
-            key = `missing-item-${item.itemTypeId}`;
-            label = '(deleted item type)';
-            isCase = false;
-            unitCost = 0;
-            unitRevenue = 0;
-          } else {
-            key = `unit-${it.id}-${item.swatchId}`;
-            label = `${it.name} - ${sw ? sw.name : '?'}`;
-            isCase = false;
-            const costPerUnit = it.unitsPerCase > 0 ? it.costPerCase / it.unitsPerCase : 0;
-            const marginFraction = Math.min(Math.max(it.marginPct, 0), 99.99) / 100;
-            const retailPerUnit = marginFraction < 1 ? costPerUnit / (1 - marginFraction) : 0;
-            unitCost = costPerUnit;
-            unitRevenue = retailPerUnit;
-          }
+      if (item.kind === 'case') {
+        const c = Cases.getCase(item.caseId);
+        const it = c ? ItemTypes.getItemType(c.itemTypeId) : null;
+        if (!c || !it) {
+          const row = ensureRow(`missing-case-${item.caseId}`, '(deleted case)');
+          row.missing += 1;
+          row.missingIsCase = true;
+          return;
         }
-
-      if (!rows[key]) rows[key] = { label, isCase, count: 0, cost: 0, revenue: 0 };
-      rows[key].count += 1;
-      rows[key].cost += unitCost;
-      rows[key].revenue += unitRevenue;
+        const sw = it.palette.find(s => s.id === c.swatchId);
+        const row = ensureRow(`sku-${it.id}-${c.swatchId}`, `${it.name} - ${sw ? sw.name : '?'}`);
+        row.unitsPerCase = it.unitsPerCase;
+        const unitsInCase = c.rows * c.cols * c.layers;
+        const costPerUnit = it.unitsPerCase > 0 ? it.costPerCase / it.unitsPerCase : 0;
+        const marginFraction = Math.min(Math.max(it.marginPct, 0), 99.99) / 100;
+        const retailPerUnit = marginFraction < 1 ? costPerUnit / (1 - marginFraction) : 0;
+        row.totalUnits += unitsInCase;
+        row.cost += costPerUnit * unitsInCase;
+        row.revenue += retailPerUnit * unitsInCase;
+      } else {
+        const it = ItemTypes.getItemType(item.itemTypeId);
+        if (!it) {
+          const row = ensureRow(`missing-item-${item.itemTypeId}`, '(deleted item type)');
+          row.missing += 1;
+          row.missingIsCase = false;
+          return;
+        }
+        const sw = it.palette.find(s => s.id === item.swatchId);
+        const row = ensureRow(`sku-${it.id}-${item.swatchId}`, `${it.name} - ${sw ? sw.name : '?'}`);
+        row.unitsPerCase = it.unitsPerCase;
+        const costPerUnit = it.unitsPerCase > 0 ? it.costPerCase / it.unitsPerCase : 0;
+        const marginFraction = Math.min(Math.max(it.marginPct, 0), 99.99) / 100;
+        const retailPerUnit = marginFraction < 1 ? costPerUnit / (1 - marginFraction) : 0;
+        row.totalUnits += 1;
+        row.cost += costPerUnit;
+        row.revenue += retailPerUnit;
+      }
     });
 
-    return Object.values(rows);
+    return Object.values(bySku).map(row => {
+      // A deleted case/item-type reference has no unit type to convert against -- keep it as a
+      // flat count under whichever column it was originally placed as, same as before.
+      if (row.missing) {
+        return { label: row.label, cases: row.missingIsCase ? row.missing : 0, looseUnits: row.missingIsCase ? 0 : row.missing, cost: row.cost, revenue: row.revenue };
+      }
+      let cases = 0, looseUnits = row.totalUnits;
+      if (row.unitsPerCase > 0) {
+        cases = Math.floor(row.totalUnits / row.unitsPerCase);
+        looseUnits = row.totalUnits % row.unitsPerCase;
+      }
+      return { label: row.label, cases, looseUnits, cost: row.cost, revenue: row.revenue };
+    });
   }
 
   function renderTally() {
@@ -2288,17 +2302,17 @@ const Grid = (() => {
       return;
     }
 
-    let totalCost = 0, totalRevenue = 0;
+    let totalCost = 0, totalRevenue = 0, totalCases = 0, totalLooseUnits = 0;
 
     const table = document.createElement('table');
     table.className = 'tally-table';
     table.innerHTML = `
       <thead>
-        <tr><th>Item</th><th>Type</th><th>Count</th><th>Cost</th><th>Revenue</th></tr>
+        <tr><th>Item</th><th>Cases</th><th>Loose units</th><th>Cost</th><th>Revenue</th></tr>
       </thead>
       <tbody></tbody>
       <tfoot>
-        <tr><td colspan="3">Total</td><td id="tallyTotalCost"></td><td id="tallyTotalRevenue"></td></tr>
+        <tr><td>Total</td><td id="tallyTotalCases"></td><td id="tallyTotalLooseUnits"></td><td id="tallyTotalCost"></td><td id="tallyTotalRevenue"></td></tr>
       </tfoot>
     `;
 
@@ -2306,17 +2320,21 @@ const Grid = (() => {
     rows.forEach(r => {
       totalCost += r.cost;
       totalRevenue += r.revenue;
+      totalCases += r.cases;
+      totalLooseUnits += r.looseUnits;
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${r.label}</td>
-        <td>${r.isCase ? 'Case' : 'Unit'}</td>
-        <td>${r.count}</td>
+        <td>${r.cases}</td>
+        <td>${r.looseUnits > 0 ? r.looseUnits : '—'}</td>
         <td>$${r.cost.toFixed(2)}</td>
         <td>$${r.revenue.toFixed(2)}</td>
       `;
       tbody.appendChild(tr);
     });
 
+    table.querySelector('#tallyTotalCases').textContent = totalCases;
+    table.querySelector('#tallyTotalLooseUnits').textContent = totalLooseUnits > 0 ? totalLooseUnits : '—';
     table.querySelector('#tallyTotalCost').textContent = `$${totalCost.toFixed(2)}`;
     table.querySelector('#tallyTotalRevenue').textContent = `$${totalRevenue.toFixed(2)}`;
 

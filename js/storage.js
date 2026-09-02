@@ -169,21 +169,25 @@ function buildTallyTableHtml(rows) {
 
   let totalCost = 0;
   let totalRevenue = 0;
+  let totalCases = 0;
+  let totalLooseUnits = 0;
   const bodyRows = rows.map(r => {
     totalCost += r.cost;
     totalRevenue += r.revenue;
+    totalCases += r.cases;
+    totalLooseUnits += r.looseUnits;
     return `<tr>
       <td>${escapeHtml(r.label)}</td>
-      <td>${r.isCase ? 'Case' : 'Unit'}</td>
-      <td>${r.count}</td>
+      <td>${r.cases}</td>
+      <td>${r.looseUnits > 0 ? r.looseUnits : '—'}</td>
       <td>$${r.cost.toFixed(2)}</td>
       <td>$${r.revenue.toFixed(2)}</td>
     </tr>`;
   }).join('');
 
   return `<table class="tally-table">
-    <thead><tr><th>Item</th><th>Type</th><th>Count</th><th>Cost</th><th>Revenue</th></tr></thead>
+    <thead><tr><th>Item</th><th>Cases</th><th>Loose units</th><th>Cost</th><th>Revenue</th></tr></thead>
     <tbody>${bodyRows}</tbody>
-    <tfoot><tr><td colspan="3">Total</td><td>$${totalCost.toFixed(2)}</td><td>$${totalRevenue.toFixed(2)}</td></tr></tfoot>
+    <tfoot><tr><td>Total</td><td>${totalCases}</td><td>${totalLooseUnits > 0 ? totalLooseUnits : '—'}</td><td>$${totalCost.toFixed(2)}</td><td>$${totalRevenue.toFixed(2)}</td></tr></tfoot>
   </table>`;
 }
