@@ -616,6 +616,23 @@ select {
   color: var(--text-dim);
   gap: 2px;
 }
+
+.viewer3d-panel-flip-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.viewer3d-panel-flip-row .btn-secondary {
+  padding: 4px 6px;
+  font-size: 0.72rem;
+}
+
+.viewer3d-panel-flip-row .btn-secondary.active {
+  background: var(--accent);
+  color: #0a0c0f;
+  border-color: var(--accent);
+}
 .viewer3d-panel-fields input {
   background: var(--panel);
   border: 1px solid var(--border);

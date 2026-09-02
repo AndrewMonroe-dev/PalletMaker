@@ -1029,6 +1029,17 @@ const Viewer3D = (() => {
     panelMeshMap = {};
     (project.imagePanels || []).forEach(panel => {
       const texture = new THREE.TextureLoader().load(panel.dataUrl);
+      // Mirrors the image via UV repeat/offset rather than negating the mesh's scale -- scaling
+      // the mesh itself would also flip the winding order (messing with the DoubleSide backface)
+      // and would have to be un-done everywhere else that reads panel.width/height as plain
+      // positive sizes (resize handle, selection outline, drag math). Flipping the texture mapping
+      // instead keeps every one of those untouched.
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.x = panel.flipH ? -1 : 1;
+      texture.repeat.y = panel.flipV ? -1 : 1;
+      texture.offset.x = panel.flipH ? 1 : 0;
+      texture.offset.y = panel.flipV ? 1 : 0;
       const mat = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide, transparent: true });
       const geo = new THREE.PlaneGeometry(panel.width, panel.height);
       const mesh = new THREE.Mesh(geo, mat);
@@ -1116,7 +1127,9 @@ const Viewer3D = (() => {
         heightOffGround: 0,
         width: 12,
         height: 12,
-        rotationY: 0
+        rotationY: 0,
+        flipH: false,
+        flipV: false
       };
       project.imagePanels.push(panel);
       selectedPanelId = panel.id; // select it immediately so its move/resize/rotate handles show up
@@ -1167,6 +1180,23 @@ const Viewer3D = (() => {
         fields.appendChild(label);
       });
       card.appendChild(fields);
+
+      const flipRow = document.createElement('div');
+      flipRow.className = 'viewer3d-panel-flip-row';
+      [['flipH', 'Flip Horizontal'], ['flipV', 'Flip Vertical']].forEach(([key, label]) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-secondary';
+        btn.classList.toggle('active', !!panel[key]);
+        btn.textContent = label;
+        btn.addEventListener('click', () => {
+          panel[key] = !panel[key];
+          saveState(state);
+          refresh();
+        });
+        flipRow.appendChild(btn);
+      });
+      card.appendChild(flipRow);
 
       const delBtn = document.createElement('button');
       delBtn.type = 'button';
