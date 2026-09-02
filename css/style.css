@@ -628,7 +628,7 @@ select {
   font-size: 0.72rem;
 }
 
-.viewer3d-panel-flip-row .btn-secondary.active {
+.btn-secondary.active {
   background: var(--accent);
   color: #0a0c0f;
   border-color: var(--accent);

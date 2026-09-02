@@ -587,7 +587,7 @@ const Viewer3D = (() => {
       selectedStackIds3D.forEach(id => {
         const stack = findStack(id);
         if (stack) {
-          addStackHighlight3D(stack, { x: stack.x + stack.footprintW / 2, y: stack.y + stack.footprintD / 2 }, 0);
+          addStackHighlight3D(stack, { x: stack.x + stack.footprintW / 2, y: stack.y + stack.footprintD / 2 }, stack.facingFlipped ? 180 : 0);
         }
       });
     }
@@ -769,12 +769,34 @@ const Viewer3D = (() => {
     }
 
     if (selectedStackIds3D.size > 0) {
+      // Facing only makes sense for a single ungrouped stack -- a group already has its own free
+      // rotation via the drag handle, and "which way does this one face" isn't well-defined for a
+      // multi-stack selection that hasn't been grouped yet.
+      let facingHtml = '';
+      const onlyStack = selectedStackIds3D.size === 1 ? findStack(Array.from(selectedStackIds3D)[0]) : null;
+      if (onlyStack) {
+        facingHtml = `
+          <div class="form-actions">
+            <button type="button" id="viewer3dFlipFacingBtn" class="btn-secondary${onlyStack.facingFlipped ? ' active' : ''}">
+              ${onlyStack.facingFlipped ? 'Facing reversed — flip back' : 'Face the other direction'}
+            </button>
+          </div>
+        `;
+      }
       panel.innerHTML = `
         <p class="empty-state">${selectedStackIds3D.size} stack(s) selected. Shift+click to add or remove more.</p>
+        ${facingHtml}
         <div class="form-actions">
           <button type="button" id="viewer3dGroupSelectedBtn" class="btn-primary" ${selectedStackIds3D.size < 2 ? 'disabled' : ''}>Group Selected (${selectedStackIds3D.size})</button>
         </div>
       `;
+      if (onlyStack) {
+        document.getElementById('viewer3dFlipFacingBtn').addEventListener('click', () => {
+          onlyStack.facingFlipped = !onlyStack.facingFlipped;
+          saveState(state);
+          refresh();
+        });
+      }
       document.getElementById('viewer3dGroupSelectedBtn').addEventListener('click', handleGroupSelectedClick3D);
       return;
     }
@@ -892,7 +914,11 @@ const Viewer3D = (() => {
     stackBoxesByStackId = {};
 
     project.stacks.filter(s => !s.groupId).forEach(stack => {
-      addStackMeshes(stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, 0);
+      // A plain 180 flip (not an arbitrary angle) so the floor footprint's axis-aligned bounding
+      // box is always identical either way -- a rectangle rotated exactly 180 degrees covers the
+      // same rect it started in, so this needs no collision re-check and can't disagree with the
+      // 2D grid's fixed-orientation footprint the way a 90-degree turn would.
+      addStackMeshes(stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, stack.facingFlipped ? 180 : 0);
     });
 
     project.groups.forEach(group => {
