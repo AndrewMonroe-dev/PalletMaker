@@ -24,6 +24,8 @@ const Viewer3D = (() => {
   let azimuth = Math.PI / 4;
   let elevation = Math.PI / 6;
   let radius = 100;
+  let orbitTargetX = 0; // world-space XZ offset of the orbit pivot, shifted by cursor-centered zoom
+  let orbitTargetZ = 0;
 
   // ---- Lighting ----
   let dirLight = null;
@@ -167,9 +169,24 @@ const Viewer3D = (() => {
     });
 
     container.addEventListener('wheel', (e) => {
-      if (!project) return;
+      if (!project || !camera) return;
       e.preventDefault();
-      radius = Math.max(20, radius + e.deltaY * 0.5);
+      // Zoom toward the point under the cursor rather than the fixed orbit pivot: find where the
+      // cursor ray hits the pivot-height plane (using the camera as it is *before* this zoom step),
+      // then nudge the pivot itself toward that point by the same fraction the radius is about to
+      // shrink -- so that point stays roughly under the cursor after the radius change, instead of
+      // the view zooming in/out around the floor's center regardless of where you're pointing.
+      const targetY = orbitTargetY();
+      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -targetY);
+      const cursorPoint = raycastPlane(e, plane);
+      const oldRadius = radius;
+      const newRadius = Math.max(20, radius + e.deltaY * 0.5);
+      if (cursorPoint && oldRadius > 0) {
+        const factor = 1 - (newRadius / oldRadius);
+        orbitTargetX += (cursorPoint.x - orbitTargetX) * factor;
+        orbitTargetZ += (cursorPoint.z - orbitTargetZ) * factor;
+      }
+      radius = newRadius;
       updateCameraPosition();
     }, { passive: false });
   }
@@ -862,6 +879,8 @@ const Viewer3D = (() => {
     rebuildSelectionVisuals3D();
 
     radius = maxDim * 1.4 + 40;
+    orbitTargetX = 0;
+    orbitTargetZ = 0;
     updateCameraPosition();
   }
 
@@ -1024,15 +1043,20 @@ const Viewer3D = (() => {
     rebuildSelectionVisuals();
   }
 
+  // Fixed pivot height (unrelated to cursor-centered zoom, which only ever shifts the XZ position).
+  function orbitTargetY() {
+    return project ? Math.max(project.footprintWidth, project.footprintDepth) / 6 : 0;
+  }
+
   function updateCameraPosition() {
     if (!camera || !project) return;
-    const targetY = Math.max(project.footprintWidth, project.footprintDepth) / 6;
+    const targetY = orbitTargetY();
     camera.position.set(
-      radius * Math.sin(azimuth) * Math.cos(elevation),
+      orbitTargetX + radius * Math.sin(azimuth) * Math.cos(elevation),
       targetY + radius * Math.sin(elevation),
-      radius * Math.cos(azimuth) * Math.cos(elevation)
+      orbitTargetZ + radius * Math.cos(azimuth) * Math.cos(elevation)
     );
-    camera.lookAt(0, targetY, 0);
+    camera.lookAt(orbitTargetX, targetY, orbitTargetZ);
     markDirty();
   }
 

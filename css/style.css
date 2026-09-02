@@ -402,12 +402,14 @@ select {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
   /* Zooming in can make the canvas larger than the viewport -- scroll within this panel rather
-     than growing the whole page (and losing the palette/selection panels off screen). */
+     than growing the whole page (and losing the palette/selection panels off screen). Deliberately
+     block layout, not flexbox align-items:center: centering an overflowing item with flexbox makes
+     half the overflow permanently unreachable by scrolling in Chrome/Firefox (scrollLeft/Top can't
+     go negative to reveal the centered-out portion) -- margin:auto on the canvas below centers it
+     the same way when it fits, but degrades to normal left/top-aligned scrolling once it doesn't,
+     which is what makes cursor-anchored zoom (and just panning around a zoomed-in floor) work.
+  */
   max-height: calc(100vh - 32px);
   overflow: auto;
 }
@@ -419,7 +421,10 @@ select {
     linear-gradient(to right, rgba(255,255,255,0.06) 1px, transparent 1px),
     linear-gradient(to bottom, rgba(255,255,255,0.06) 1px, transparent 1px);
   border: 2px solid var(--border);
+  margin: 0 auto;
 }
+
+#gridHint { margin-top: 10px; }
 
 .grid-stack {
   position: absolute;

@@ -76,7 +76,7 @@ const Grid = (() => {
     document.querySelector('.grid-canvas-wrap').addEventListener('wheel', (e) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      setZoom(zoomLevel + (e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP));
+      setZoomAtPoint(zoomLevel + (e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP), e.clientX, e.clientY);
     }, { passive: false });
     window.addEventListener('mousemove', handlePointerMove);
     window.addEventListener('mouseup', handlePointerUp);
@@ -425,6 +425,30 @@ const Grid = (() => {
     if (project) renderCanvas();
     const levelEl = document.getElementById('gridZoomLevel');
     if (levelEl) levelEl.textContent = `${Math.round(zoomLevel * 100)}%`;
+  }
+
+  // Same as setZoom, but keeps the world point under (clientX, clientY) visually fixed on screen
+  // instead of zooming around the wrap's top-left / whatever happens to be scrolled into view --
+  // captures the mouse's offset into the (pre-zoom) canvas and the wrap's own scroll container,
+  // then after the resize adjusts scrollLeft/scrollTop by exactly how far that same world point
+  // moved on screen, so it lands back under the cursor.
+  function setZoomAtPoint(level, clientX, clientY) {
+    const wrap = document.querySelector('.grid-canvas-wrap');
+    const canvas = document.getElementById('gridCanvas');
+    if (!project || !wrap || !canvas) { setZoom(level); return; }
+
+    const oldScale = scale;
+    const canvasRectBefore = canvas.getBoundingClientRect();
+    const worldX = (clientX - canvasRectBefore.left) / oldScale;
+    const worldY = (clientY - canvasRectBefore.top) / oldScale;
+
+    setZoom(level);
+
+    const canvasRectAfter = canvas.getBoundingClientRect();
+    const actualScreenX = canvasRectAfter.left + worldX * scale;
+    const actualScreenY = canvasRectAfter.top + worldY * scale;
+    wrap.scrollLeft += actualScreenX - clientX;
+    wrap.scrollTop += actualScreenY - clientY;
   }
 
   function computeScale() {
