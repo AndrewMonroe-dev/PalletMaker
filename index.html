@@ -372,15 +372,56 @@
             <button id="viewer3dExportBtn" class="btn-primary">Export Image</button>
             <button id="viewer3dPrintBtn" class="btn-secondary">Print</button>
           </div>
+          <div class="form-actions">
+            <button id="viewer3dArBtn" class="btn-secondary">View in AR</button>
+          </div>
+          <div class="note" id="arExportNote" style="display:none;"></div>
 
           <div id="viewer3dTallySummary" class="viewer3d-tally-summary"></div>
         </div>
+      </div>
+    </div>
+
+    <div id="arModal" class="ar-modal hidden">
+      <div class="ar-modal-inner">
+        <div class="ar-modal-header">
+          <h3>View in AR</h3>
+          <button type="button" id="arModalCloseBtn" class="btn-icon" title="Close">&times;</button>
+        </div>
+        <p class="note">On a phone, tap the AR button in the corner of the model below to place it at real-world scale in your actual space. On desktop this just shows a 3D preview -- open this page on your phone to use AR (see the Backup/Restore note in the toolbar to get this project onto it).</p>
+        <!-- ar-modes lets model-viewer pick Quick Look (iOS, needs ios-src) or Scene Viewer
+             (Android, needs src) automatically; camera-controls gives a fallback orbit view on
+             desktop where there's no AR to launch at all. -->
+        <model-viewer id="arModelViewer" ar ar-modes="webxr scene-viewer quick-look" camera-controls
+          style="width:100%; height:60vh; background:#0e1013; border-radius:var(--radius);"></model-viewer>
       </div>
     </div>
   </section>
 </main>
 
 <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+<!-- GLTFExporter/USDZExporter only ship as ES modules at this three.js version (no UMD build for
+     individual examples/jsm addons), and those module files import their own "three" via a bare
+     specifier -- which the browser can't resolve without this import map telling it where "three"
+     actually is (confirmed live: without it, the import throws "Failed to resolve module specifier
+     'three'" and silently leaves window.GLTFExporter undefined). Imported and attached to window so
+     the rest of the app's plain <script> files (loaded after this one finishes, since module
+     scripts are always deferred) can use them like any other global without themselves becoming
+     modules. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.128.0/build/three.module.js"
+  }
+}
+</script>
+<script type="module">
+  import { GLTFExporter } from 'https://unpkg.com/three@0.128.0/examples/jsm/exporters/GLTFExporter.js';
+  import { USDZExporter } from 'https://unpkg.com/three@0.128.0/examples/jsm/exporters/USDZExporter.js';
+  window.GLTFExporter = GLTFExporter;
+  window.USDZExporter = USDZExporter;
+</script>
+<script src="https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js" type="module"></script>
 <script src="js/storage.js"></script>
 <script src="js/fileSync.js"></script>
 <script src="js/itemTypes.js"></script>

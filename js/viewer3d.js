@@ -53,6 +53,10 @@ const Viewer3D = (() => {
     document.getElementById('viewer3dAddImage').addEventListener('change', handleAddImage);
     document.getElementById('viewer3dExportBtn').addEventListener('click', handleExportImage);
     document.getElementById('viewer3dPrintBtn').addEventListener('click', handlePrintImage);
+    document.getElementById('viewer3dArBtn').addEventListener('click', handleViewInAr);
+    document.getElementById('arModalCloseBtn').addEventListener('click', () => {
+      document.getElementById('arModal').classList.add('hidden');
+    });
     document.getElementById('viewer3dLightAzimuth').addEventListener('input', (e) => {
       lightAzimuth = parseFloat(e.target.value) || 0;
       updateLightPosition();
@@ -1337,6 +1341,142 @@ const Viewer3D = (() => {
 </body>
 </html>`);
     printWindow.document.close();
+  }
+
+  // ---- AR export ----
+
+  const IN_TO_M = 0.0254; // glTF/USDZ (and the ARKit/ARCore viewers that consume them) assume
+                           // 1 unit = 1 meter, but every mesh in this scene is built in inches.
+
+  // Builds a standalone scene containing only the real placed content -- item boxes and image
+  // panels, plus a fresh floor plane -- scaled from inches to meters. Deliberately NOT a reference
+  // to (or mutation of) the live interactive `scene`: that one also carries selection outlines,
+  // resize/rotate handles, and the on-screen grid-line helper, none of which belong in an AR
+  // placement of the actual display. stackMeshMap/panelMeshMap already track exactly the real
+  // content meshes (rebuilt every buildScene()), so cloning off of those is enough -- no need to
+  // re-derive geometry from project data a second time.
+  // USDZExporter (this three.js version) unconditionally reads material.normalMap/.aoMap/
+  // .roughnessMap/.metalnessMap/.emissiveMap and treats anything `!== null` as "there's a texture
+  // here, read its .uuid" -- MeshBasicMaterial (image panels) doesn't declare those properties at
+  // all, so they read back `undefined` (which IS `!== null`), and it crashes reading .uuid off
+  // nothing. Rebuilding every exported mesh's material as a plain MeshStandardMaterial (which
+  // explicitly defaults all of those to null) sidesteps the bug regardless of what material type
+  // the live scene actually used.
+  function toArExportMaterial(mat) {
+    return new THREE.MeshStandardMaterial({
+      color: mat.color ? mat.color.clone() : 0x888888,
+      map: mat.map || null
+    });
+  }
+
+  function buildArExportScene() {
+    if (!project) return null;
+    const exportScene = new THREE.Scene();
+
+    const floorGeo = new THREE.PlaneGeometry(project.footprintWidth, project.footprintDepth);
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x1d2026, side: THREE.DoubleSide });
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    exportScene.add(floor);
+
+    // Item boxes use a 6-entry material array live (buildBoxMesh) so only the front face shows
+    // the case photo -- confirmed live that USDZExporter at this three.js version can't handle a
+    // multi-material mesh at all (throws deep inside its own traverse callback). Collapsed to one
+    // material for the AR export: AR here is for checking real-world scale and fit, not per-face
+    // photorealism, so showing the case photo on every face is a reasonable simplification rather
+    // than a flat gray box.
+    Object.values(stackMeshMap).forEach(box => {
+      const clone = box.clone();
+      const mat = Array.isArray(clone.material) ? (clone.material[4] || clone.material[0]) : clone.material;
+      clone.material = toArExportMaterial(mat);
+      exportScene.add(clone);
+    });
+    // Image panels use a plain MeshBasicMaterial live -- also confirmed live to crash the same
+    // USDZExporter traverse (see toArExportMaterial above for why), independently of the box
+    // multi-material issue above.
+    Object.values(panelMeshMap).forEach(panel => {
+      const clone = panel.clone();
+      clone.material = toArExportMaterial(clone.material);
+      exportScene.add(clone);
+    });
+
+    exportScene.scale.setScalar(IN_TO_M);
+    return exportScene;
+  }
+
+  function exportGlb(exportScene) {
+    return new Promise((resolve, reject) => {
+      const exporter = new GLTFExporter();
+      // This three.js version's GLTFExporter.parse signature is (input, onDone, options) -- no
+      // separate onError callback. Confirmed live: calling it with a 4-arg (onDone, onError,
+      // options) signature silently passed the onError function in as `options`, so
+      // `options.binary` read as undefined and it silently fell back to plain (non-binary) JSON
+      // output instead of the requested GLB ArrayBuffer -- model-viewer then failed trying to
+      // JSON.parse what should have been binary data. Errors from this call are all synchronous
+      // (anything inside its own internal Promise chain isn't reachable from out here at all).
+      try {
+        exporter.parse(
+          exportScene,
+          (result) => resolve(new Blob([result], { type: 'model/gltf-binary' })),
+          { binary: true }
+        );
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  function exportUsdz(exportScene) {
+    return new Promise((resolve, reject) => {
+      const exporter = new USDZExporter();
+      exporter.parse(exportScene)
+        .then(result => resolve(new Blob([result], { type: 'model/vnd.usdz+zip' })))
+        .catch(reject);
+    });
+  }
+
+  async function handleViewInAr() {
+    if (!project) return;
+    if (typeof GLTFExporter === 'undefined' || typeof USDZExporter === 'undefined' || !customElements.get('model-viewer')) {
+      alert('The AR export libraries failed to load (check your internet connection) and try again.');
+      return;
+    }
+
+    const noteEl = document.getElementById('arExportNote');
+    noteEl.style.display = 'block';
+    noteEl.textContent = 'Building 3D model...';
+    const btn = document.getElementById('viewer3dArBtn');
+    btn.disabled = true;
+
+    try {
+      const exportScene = buildArExportScene();
+      if (!exportScene) return;
+
+      // Both formats are built up front (not lazily per-platform) since there's no reliable way
+      // from inside the browser to know in advance whether the phone that opens this modal is an
+      // iPhone (needs ios-src="*.usdz" for Quick Look) or Android (needs src="*.glb" for Scene
+      // Viewer/WebXR) -- model-viewer itself picks the right one at AR-launch time.
+      const [glbBlob, usdzBlob] = await Promise.all([exportGlb(exportScene), exportUsdz(exportScene)]);
+
+      const mv = document.getElementById('arModelViewer');
+      if (mv.dataset.glbUrl) URL.revokeObjectURL(mv.dataset.glbUrl);
+      if (mv.dataset.usdzUrl) URL.revokeObjectURL(mv.dataset.usdzUrl);
+      const glbUrl = URL.createObjectURL(glbBlob);
+      const usdzUrl = URL.createObjectURL(usdzBlob);
+      mv.dataset.glbUrl = glbUrl;
+      mv.dataset.usdzUrl = usdzUrl;
+      mv.setAttribute('src', glbUrl);
+      mv.setAttribute('ios-src', usdzUrl);
+
+      noteEl.textContent = '';
+      noteEl.style.display = 'none';
+      document.getElementById('arModal').classList.remove('hidden');
+    } catch (err) {
+      console.error(err);
+      alert('Building the AR model failed: ' + (err && err.message ? err.message : err));
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   return { init, refresh, stopRenderLoop };
