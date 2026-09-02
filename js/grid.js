@@ -25,6 +25,7 @@ const Grid = (() => {
   let selectedStackId = null;      // single ungrouped stack selected
   let selectedTopper = null;       // { stackId, topperId } selected
   let multiSelectIds = new Set();  // ungrouped stack ids selected for grouping
+  let multiSelectTopperKeys = new Set(); // "stackId:topperId" keys for toppers selected for grouping
   let selectedGroupId = null;      // a group selected
 
   let dragOp = null; // in-progress group move/rotate drag state
@@ -107,7 +108,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     selectedTopper = null;
-    multiSelectIds.clear();
+    multiSelectIds.clear(); multiSelectTopperKeys.clear();
     saveState(state);
     render();
   }
@@ -168,7 +169,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     selectedTopper = null;
-    multiSelectIds.clear();
+    multiSelectIds.clear(); multiSelectTopperKeys.clear();
     clearHistory();
     saveState(state);
     render();
@@ -181,7 +182,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     selectedTopper = null;
-    multiSelectIds.clear();
+    multiSelectIds.clear(); multiSelectTopperKeys.clear();
     clearHistory();
     saveState(state);
     render();
@@ -196,7 +197,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     selectedTopper = null;
-    multiSelectIds.clear();
+    multiSelectIds.clear(); multiSelectTopperKeys.clear();
     clearHistory();
     saveState(state);
     render();
@@ -236,7 +237,7 @@ const Grid = (() => {
         selectedStackId = null;
         selectedGroupId = null;
     selectedTopper = null;
-        multiSelectIds.clear();
+        multiSelectIds.clear(); multiSelectTopperKeys.clear();
         clearHistory();
         saveState(state);
         render();
@@ -288,6 +289,8 @@ const Grid = (() => {
 
     noProjectEl.classList.add('hidden');
     workspaceEl.classList.remove('hidden');
+
+    resyncActiveProjectFootprints();
 
     document.getElementById('gridProjectName').textContent = project.name;
     document.getElementById('gridProjectDims').textContent =
@@ -483,7 +486,7 @@ const Grid = (() => {
         selectedStackId = stack.id;
         selectedGroupId = null;
         selectedTopper = null;
-        multiSelectIds.clear();
+        multiSelectIds.clear(); multiSelectTopperKeys.clear();
       }
       render();
     });
@@ -508,11 +511,14 @@ const Grid = (() => {
 
   // A topper's box on the 2D floor: positioned within its parent stack's rectangle at the
   // topper's local offset, rendered smaller with its own border so it visibly reads as sitting on
-  // top rather than as part of the base. Toppers aren't independently draggable -- delete and
-  // re-drop to reposition one.
+  // top rather than as part of the base. Draggable via startTopperMove, same resolution rules as
+  // a fresh palette drop (see commitTopperMove).
   function buildTopperEl(stack, topper) {
     const el = document.createElement('div');
-    el.className = 'grid-stack grid-topper' + (isTopperSelected(stack.id, topper.id) ? ' selected' : '');
+    const isMultiSelected = multiSelectTopperKeys.has(topperKey(stack.id, topper.id));
+    el.className = 'grid-stack grid-topper'
+      + (isTopperSelected(stack.id, topper.id) ? ' selected' : '')
+      + (isMultiSelected ? ' selected' : '');
     el.style.left = `${(stack.x + topper.dx) * scale}px`;
     el.style.top = `${(stack.y + topper.dy) * scale}px`;
     el.style.width = `${topper.footprintW * scale}px`;
@@ -525,13 +531,21 @@ const Grid = (() => {
     badge.textContent = topper.items.length > 1 ? `x${topper.items.length}` : '1';
     el.appendChild(badge);
 
-    el.addEventListener('mousedown', (e) => e.stopPropagation());
+    el.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      if (e.shiftKey) return; // shift+click is for multi-select, not moving
+      startTopperMove(e, stack, topper);
+    });
     el.addEventListener('click', (e) => {
       e.stopPropagation();
-      selectedTopper = { stackId: stack.id, topperId: topper.id };
-      selectedStackId = null;
-      selectedGroupId = null;
-      multiSelectIds.clear();
+      if (e.shiftKey) {
+        toggleTopperMultiSelect(stack.id, topper.id);
+      } else {
+        selectedTopper = { stackId: stack.id, topperId: topper.id };
+        selectedStackId = null;
+        selectedGroupId = null;
+        multiSelectIds.clear(); multiSelectTopperKeys.clear();
+      }
       render();
     });
     el.addEventListener('dblclick', (e) => {
@@ -593,8 +607,22 @@ const Grid = (() => {
   function toggleMultiSelect(stackId) {
     selectedStackId = null;
     selectedGroupId = null;
+    selectedTopper = null;
     if (multiSelectIds.has(stackId)) multiSelectIds.delete(stackId);
     else multiSelectIds.add(stackId);
+  }
+
+  function topperKey(stackId, topperId) {
+    return `${stackId}:${topperId}`;
+  }
+
+  function toggleTopperMultiSelect(stackId, topperId) {
+    selectedStackId = null;
+    selectedGroupId = null;
+    selectedTopper = null;
+    const key = topperKey(stackId, topperId);
+    if (multiSelectTopperKeys.has(key)) multiSelectTopperKeys.delete(key);
+    else multiSelectTopperKeys.add(key);
   }
 
   function resolveSwatch(itemTypeId, swatchId) {
@@ -788,6 +816,49 @@ const Grid = (() => {
   function rectsOverlap(a, b) {
     return a.x < b.x + b.w - COLLISION_EPSILON && a.x + a.w > b.x + COLLISION_EPSILON &&
       a.y < b.y + b.d - COLLISION_EPSILON && a.y + a.d > b.y + COLLISION_EPSILON;
+  }
+
+  // ---- Live footprint resync ----
+  // Every stack/topper stores its own footprintW/D so merge/edge-snap checks have something to
+  // compare without re-deriving it constantly -- but that's only ever a snapshot from whenever
+  // the item was placed. Editing an item type's or case's real width/depth afterward (a normal
+  // part of dialing in real-world measurements) left every already-placed stack of that type
+  // stuck with the old size forever, next to new ones using the corrected size -- a real,
+  // visible misalignment in both the grid and the 3D viewer, since both render straight off
+  // these stored fields (the 3D viewer's own per-box size was already computed live via
+  // getItemFootprint() there, but its box CENTER used this same stale stack.footprintW/D, so it
+  // rendered at the right size in the wrong place). Re-synced from the live item type/case data
+  // every time the active project is touched, so both views self-heal automatically.
+  function computeItemFootprint(item) {
+    if (item.kind === 'case') {
+      const c = Cases.getCase(item.caseId);
+      const it = c ? ItemTypes.getItemType(c.itemTypeId) : null;
+      return (c && it) ? { w: c.cols * it.width, d: c.layers * it.depth } : null;
+    }
+    const it = ItemTypes.getItemType(item.itemTypeId);
+    return it ? { w: it.width, d: it.depth } : null;
+  }
+
+  function resyncActiveProjectFootprints() {
+    if (!project) return;
+    project.stacks.forEach(stack => {
+      const live = stack.items.length ? computeItemFootprint(stack.items[0]) : null;
+      if (live && (Math.abs(live.w - stack.footprintW) > 0.001 || Math.abs(live.d - stack.footprintD) > 0.001)) {
+        stack.footprintW = live.w;
+        stack.footprintD = live.d;
+      }
+      stack.toppers.forEach(topper => {
+        const liveTopper = topper.items.length ? computeItemFootprint(topper.items[0]) : null;
+        if (liveTopper && (Math.abs(liveTopper.w - topper.footprintW) > 0.001 || Math.abs(liveTopper.d - topper.footprintD) > 0.001)) {
+          topper.footprintW = liveTopper.w;
+          topper.footprintD = liveTopper.d;
+        }
+        // Keep the topper resting fully on its (possibly resized) parent's surface rather than
+        // hanging off an edge that just moved.
+        topper.dx = clamp(topper.dx, 0, Math.max(0, stack.footprintW - topper.footprintW));
+        topper.dy = clamp(topper.dy, 0, Math.max(0, stack.footprintD - topper.footprintD));
+      });
+    });
   }
 
   function clamp(v, lo, hi) {
@@ -1084,23 +1155,58 @@ const Grid = (() => {
   // ---- Grouping ----
 
   function handleGroupSelected() {
-    if (multiSelectIds.size < 2) return;
-    const groupId = groupStackIds(Array.from(multiSelectIds));
+    if (multiSelectIds.size + multiSelectTopperKeys.size < 2) return;
+    pushUndo(snapshotProject());
+    const ids = popSelectedToppersToStacks(Array.from(multiSelectIds));
+    const groupId = groupStackIds(ids, { skipUndo: true });
     if (!groupId) return;
-    multiSelectIds.clear();
+    multiSelectIds.clear(); multiSelectTopperKeys.clear();
     selectedGroupId = groupId;
     render();
+  }
+
+  // A selected topper has no independent floor position of its own (only dx/dy local to its
+  // parent case) -- grouping treats it like any other selected item by first popping it off its
+  // parent onto the floor as its own standalone stack (same footprint/items, same real-world
+  // position it already occupied), same outcome as dragging it onto open floor. Returns the full
+  // list of stack ids to group: the original selected stack ids plus one new id per popped topper.
+  function popSelectedToppersToStacks(stackIds) {
+    const ids = stackIds.slice();
+    multiSelectTopperKeys.forEach(key => {
+      const [stackId, topperId] = key.split(':');
+      const parent = project.stacks.find(s => s.id === stackId);
+      if (!parent) return;
+      const idx = parent.toppers.findIndex(t => t.id === topperId);
+      if (idx === -1) return;
+      const topper = parent.toppers[idx];
+      parent.toppers.splice(idx, 1);
+      const newStack = {
+        id: uid('stack'),
+        x: parent.x + topper.dx,
+        y: parent.y + topper.dy,
+        footprintW: topper.footprintW,
+        footprintD: topper.footprintD,
+        items: topper.items,
+        toppers: [],
+        groupId: null
+      };
+      project.stacks.push(newStack);
+      ids.push(newStack.id);
+    });
+    return ids;
   }
 
   // Creates a group from the given (ungrouped) stack ids -- the shared mutation both the 2D
   // grid's "Group Selected" button and the 3D viewer's equivalent call into, so there's one
   // source of truth for what grouping actually does. Returns the new group's id, or null if
   // fewer than 2 valid ungrouped stacks were given.
-  function groupStackIds(stackIds) {
+  function groupStackIds(stackIds, opts) {
     const memberStacks = project.stacks.filter(s => stackIds.includes(s.id) && !s.groupId);
     if (memberStacks.length < 2) return null;
 
-    pushUndo(snapshotProject());
+    // grid.js's own multi-select flow may have already popped selected toppers into standalone
+    // stacks and pushed one undo entry covering that plus this grouping, as a single user action.
+    if (!opts || !opts.skipUndo) pushUndo(snapshotProject());
 
     const minX = Math.min(...memberStacks.map(s => s.x));
     const minY = Math.min(...memberStacks.map(s => s.y));
@@ -1253,7 +1359,7 @@ const Grid = (() => {
       e.stopPropagation();
       selectedGroupId = group.id;
       selectedStackId = null;
-      multiSelectIds.clear();
+      multiSelectIds.clear(); multiSelectTopperKeys.clear();
       render();
     });
     el.addEventListener('dblclick', (e) => {
@@ -1295,7 +1401,7 @@ const Grid = (() => {
       selectedTopper = { stackId: stack.id, topperId: topper.id };
       selectedStackId = null;
       selectedGroupId = null;
-      multiSelectIds.clear();
+      multiSelectIds.clear(); multiSelectTopperKeys.clear();
       render();
     });
     el.addEventListener('dblclick', (e) => {
@@ -1332,6 +1438,27 @@ const Grid = (() => {
       startMouseY: e.clientY,
       startX: stack.x,
       startY: stack.y,
+      beforeSnapshot: snapshotProject()
+    };
+  }
+
+  // A placed unit (topper) can be picked up and dropped anywhere -- same resolution as a fresh
+  // palette drop (resolvePlacement below): back onto its own case at a new spot, onto a different
+  // stackable case as a topper there, or onto open floor as its own new standalone stack.
+  function startTopperMove(e, stack, topper) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startWorldX = stack.x + topper.dx;
+    const startWorldY = stack.y + topper.dy;
+    dragOp = {
+      type: 'topper-move',
+      originStackId: stack.id,
+      topperId: topper.id,
+      el: e.currentTarget,
+      startMouseX: e.clientX,
+      startMouseY: e.clientY,
+      startWorldX, startWorldY,
+      worldX: startWorldX, worldY: startWorldY,
       beforeSnapshot: snapshotProject()
     };
   }
@@ -1423,6 +1550,90 @@ const Grid = (() => {
     render();
   }
 
+  function commitTopperMove(op) {
+    const originStack = project.stacks.find(s => s.id === op.originStackId);
+    if (!originStack) return;
+    const topperIdx = originStack.toppers.findIndex(t => t.id === op.topperId);
+    if (topperIdx === -1) return;
+    const topper = originStack.toppers[topperIdx];
+
+    // Pulled out up front so resolving a target against its own former parent (re-landing on the
+    // same case at a new spot) doesn't see it as a stale sibling of itself.
+    originStack.toppers.splice(topperIdx, 1);
+
+    function revert(message) {
+      originStack.toppers.splice(topperIdx, 0, topper);
+      if (message) alert(message);
+      render();
+    }
+
+    const rawX = snap(op.worldX);
+    const rawY = snap(op.worldY);
+    const placement = resolvePlacement(topper.footprintW, topper.footprintD, rawX, rawY, null);
+
+    if (placement && placement.blocked) {
+      revert(placement.reason);
+      return;
+    }
+
+    const { x, y } = placement
+      ? { x: rawX, y: rawY }
+      : snapToNeighborEdges(rawX, rawY, topper.footprintW, topper.footprintD, null);
+
+    if (!placement && (x < 0 || y < 0 || x + topper.footprintW > project.footprintWidth || y + topper.footprintD > project.footprintDepth)) {
+      revert('That placement goes outside the floor footprint. Reverted.');
+      return;
+    }
+
+    if (!placement) {
+      const droppedCorners = aabbCorners(x, y, topper.footprintW, topper.footprintD);
+      if (collidesWithAnything(droppedCorners, { excludeStackId: null, excludeGroupId: null })) {
+        revert('That overlaps an existing stack or group. Reverted.');
+        return;
+      }
+    }
+
+    const wasSelected = !!selectedTopper && selectedTopper.stackId === op.originStackId && selectedTopper.topperId === op.topperId;
+    if (wasSelected) selectedTopper = null;
+
+    if (placement && placement.mode === 'base') {
+      // Lands fully covering a same-footprint case -- merges straight into its base column, same
+      // as dragging a fresh matching item from the palette would.
+      placement.targetStack.items.push(...topper.items);
+      if (wasSelected) selectedStackId = placement.targetStack.id;
+    } else if (placement && placement.mode === 'merge-topper') {
+      placement.topper.items.push(...topper.items);
+      if (wasSelected) selectedTopper = { stackId: placement.targetStack.id, topperId: placement.topper.id };
+    } else if (placement && placement.mode === 'new-topper') {
+      placement.targetStack.toppers.push({
+        id: uid('topper'),
+        dx: placement.localX,
+        dy: placement.localY,
+        footprintW: topper.footprintW, footprintD: topper.footprintD,
+        items: topper.items
+      });
+      const newTopper = placement.targetStack.toppers[placement.targetStack.toppers.length - 1];
+      if (wasSelected) selectedTopper = { stackId: placement.targetStack.id, topperId: newTopper.id };
+    } else {
+      // No stackable target under the drop point -- becomes its own standalone floor stack.
+      const newStack = {
+        id: uid('stack'),
+        x, y,
+        footprintW: topper.footprintW,
+        footprintD: topper.footprintD,
+        items: topper.items,
+        toppers: [],
+        groupId: null
+      };
+      project.stacks.push(newStack);
+      if (wasSelected) selectedStackId = newStack.id;
+    }
+
+    pushUndo(op.beforeSnapshot);
+    saveState(state);
+    render();
+  }
+
   function startGroupMove(e, group) {
     e.preventDefault();
     e.stopPropagation();
@@ -1498,6 +1709,18 @@ const Grid = (() => {
       return;
     }
 
+    if (dragOp.type === 'topper-move') {
+      const dxPx = e.clientX - dragOp.startMouseX;
+      const dyPx = e.clientY - dragOp.startMouseY;
+      dragOp.worldX = dragOp.startWorldX + dxPx / scale;
+      dragOp.worldY = dragOp.startWorldY + dyPx / scale;
+      if (dragOp.el) {
+        dragOp.el.style.left = `${dragOp.worldX * scale}px`;
+        dragOp.el.style.top = `${dragOp.worldY * scale}px`;
+      }
+      return;
+    }
+
     const group = project.groups.find(g => g.id === dragOp.groupId);
     if (!group) { dragOp = null; return; }
 
@@ -1534,6 +1757,15 @@ const Grid = (() => {
       return;
     }
 
+    if (dragOp.type === 'topper-move') {
+      const op = dragOp;
+      dragOp = null;
+      const moved = Math.abs(op.worldX - op.startWorldX) > 0.05 || Math.abs(op.worldY - op.startWorldY) > 0.05;
+      if (!moved) return;
+      commitTopperMove(op);
+      return;
+    }
+
     const group = project.groups.find(g => g.id === dragOp.groupId);
     const op = dragOp;
     dragOp = null;
@@ -1567,7 +1799,7 @@ const Grid = (() => {
     const panel = document.getElementById('gridSelectionPanel');
     panel.innerHTML = '';
 
-    if (multiSelectIds.size >= 1) {
+    if (multiSelectIds.size + multiSelectTopperKeys.size >= 1) {
       renderMultiSelectPanel(panel);
       return;
     }
@@ -1589,7 +1821,7 @@ const Grid = (() => {
 
     const stack = project.stacks.find(s => s.id === selectedStackId && !s.groupId);
     if (!stack) {
-      panel.innerHTML = '<p class="empty-state">Click a stack on the floor to manage it. Shift+click multiple stacks to group them.</p>';
+      panel.innerHTML = '<p class="empty-state">Click a stack or placed unit on the floor to manage it. Shift+click several (stacks or units) to group them.</p>';
       return;
     }
 
@@ -1599,9 +1831,10 @@ const Grid = (() => {
   function renderMultiSelectPanel(panel) {
     const wrap = document.createElement('div');
     wrap.className = 'selection-detail';
+    const totalSelected = multiSelectIds.size + multiSelectTopperKeys.size;
     const info = document.createElement('p');
     info.className = 'empty-state';
-    info.textContent = `${multiSelectIds.size} stack(s) selected. Shift+click to add or remove more.`;
+    info.textContent = `${totalSelected} item(s) selected. Shift+click to add or remove more.`;
     wrap.appendChild(info);
 
     const btnRow = document.createElement('div');
@@ -1609,8 +1842,8 @@ const Grid = (() => {
     const groupBtn = document.createElement('button');
     groupBtn.type = 'button';
     groupBtn.className = 'btn-primary';
-    groupBtn.textContent = `Group Selected (${multiSelectIds.size})`;
-    groupBtn.disabled = multiSelectIds.size < 2;
+    groupBtn.textContent = `Group Selected (${totalSelected})`;
+    groupBtn.disabled = totalSelected < 2;
     groupBtn.addEventListener('click', handleGroupSelected);
     btnRow.appendChild(groupBtn);
 
@@ -1618,7 +1851,7 @@ const Grid = (() => {
     clearBtn.type = 'button';
     clearBtn.className = 'btn-secondary';
     clearBtn.textContent = 'Clear selection';
-    clearBtn.addEventListener('click', () => { multiSelectIds.clear(); render(); });
+    clearBtn.addEventListener('click', () => { multiSelectIds.clear(); multiSelectTopperKeys.clear(); render(); });
     btnRow.appendChild(clearBtn);
 
     wrap.appendChild(btnRow);
@@ -2046,13 +2279,14 @@ const Grid = (() => {
       selectedStackId = null;
       selectedGroupId = null;
       selectedTopper = null;
-      multiSelectIds.clear();
+      multiSelectIds.clear(); multiSelectTopperKeys.clear();
       clearHistory();
     }
     render();
   }
 
   function getActiveProject() {
+    resyncActiveProjectFootprints();
     return project;
   }
 
