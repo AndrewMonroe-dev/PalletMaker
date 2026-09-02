@@ -371,6 +371,32 @@ select {
 .palette-chip .chip-name { font-size: 0.82rem; }
 .palette-chip .chip-sub { font-size: 0.7rem; color: var(--text-dim); }
 
+.grid-canvas-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.grid-zoom-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+}
+
+.grid-zoom-bar .btn-secondary {
+  padding: 4px 10px;
+  line-height: 1.4;
+}
+
+.grid-zoom-level {
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  min-width: 3.4em;
+  text-align: center;
+}
+
 .grid-canvas-wrap {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -380,6 +406,10 @@ select {
   flex-direction: column;
   align-items: center;
   gap: 10px;
+  /* Zooming in can make the canvas larger than the viewport -- scroll within this panel rather
+     than growing the whole page (and losing the palette/selection panels off screen). */
+  max-height: calc(100vh - 32px);
+  overflow: auto;
 }
 
 .grid-canvas {

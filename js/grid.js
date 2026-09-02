@@ -11,6 +11,9 @@ const Grid = (() => {
   const PX_PER_IN_MAX = 40; // ceiling so a small floor doesn't get absurdly huge cells
   const MERGE_OVERLAP_FRACTION = 0.8; // how much of the footprint must overlap to count as "landed on it" and merge
   const EDGE_SNAP_TOLERANCE_IN = 2;
+  const ZOOM_MIN = 0.25;
+  const ZOOM_MAX = 4;
+  const ZOOM_STEP = 0.25;
 
   // A 1x1 transparent gif, used as a blank native drag image -- the snapped live preview drawn on
   // the canvas during dragover is the only "where will this land" indicator; the cursor itself
@@ -21,6 +24,7 @@ const Grid = (() => {
   let state = null;
   let project = null;
   let scale = 1; // px per inch
+  let zoomLevel = 1; // user-controlled multiplier on top of the auto-fit scale; resets per project switch
 
   let selectedStackId = null;      // single ungrouped stack selected
   let selectedTopper = null;       // { stackId, topperId } selected
@@ -64,6 +68,16 @@ const Grid = (() => {
     document.getElementById('btnUndo').addEventListener('click', undo);
     document.getElementById('btnRedo').addEventListener('click', redo);
     document.getElementById('btnPrintGrid').addEventListener('click', handlePrintGrid);
+    document.getElementById('btnZoomIn').addEventListener('click', () => setZoom(zoomLevel + ZOOM_STEP));
+    document.getElementById('btnZoomOut').addEventListener('click', () => setZoom(zoomLevel - ZOOM_STEP));
+    document.getElementById('btnZoomReset').addEventListener('click', () => setZoom(1));
+    // Ctrl/Cmd+wheel over the canvas zooms the grid instead of the whole page, matching the
+    // browser's own page-zoom gesture so it reads as familiar rather than a bespoke control.
+    document.querySelector('.grid-canvas-wrap').addEventListener('wheel', (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      setZoom(zoomLevel + (e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP));
+    }, { passive: false });
     window.addEventListener('mousemove', handlePointerMove);
     window.addEventListener('mouseup', handlePointerUp);
     window.addEventListener('keydown', (e) => {
@@ -171,6 +185,7 @@ const Grid = (() => {
     selectedTopper = null;
     multiSelectIds.clear(); multiSelectTopperKeys.clear();
     clearHistory();
+    zoomLevel = 1;
     saveState(state);
     render();
   }
@@ -184,6 +199,7 @@ const Grid = (() => {
     selectedTopper = null;
     multiSelectIds.clear(); multiSelectTopperKeys.clear();
     clearHistory();
+    zoomLevel = 1;
     saveState(state);
     render();
   }
@@ -404,13 +420,21 @@ const Grid = (() => {
   }
 
 
+  function setZoom(level) {
+    zoomLevel = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, level));
+    if (project) renderCanvas();
+    const levelEl = document.getElementById('gridZoomLevel');
+    if (levelEl) levelEl.textContent = `${Math.round(zoomLevel * 100)}%`;
+  }
+
   function computeScale() {
     const wrap = document.querySelector('.grid-canvas-wrap');
     const availableWidth = Math.max(300, (wrap ? wrap.clientWidth : 800) - 32);
     const availableHeight = Math.max(300, window.innerHeight * 0.7);
     const w = project.footprintWidth;
     const d = project.footprintDepth;
-    scale = Math.min(availableWidth / w, availableHeight / d, PX_PER_IN_MAX);
+    const fitScale = Math.min(availableWidth / w, availableHeight / d, PX_PER_IN_MAX);
+    scale = fitScale * zoomLevel;
     return scale;
   }
 
@@ -420,6 +444,8 @@ const Grid = (() => {
     canvas.style.width = `${project.footprintWidth * scale}px`;
     canvas.style.height = `${project.footprintDepth * scale}px`;
     canvas.style.backgroundSize = `${scale}px ${scale}px`;
+    const levelEl = document.getElementById('gridZoomLevel');
+    if (levelEl) levelEl.textContent = `${Math.round(zoomLevel * 100)}%`;
 
     canvas.innerHTML = '';
     dragPreviewEl = null; // the node above was just destroyed along with everything else

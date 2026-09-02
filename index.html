@@ -304,9 +304,17 @@
           <div id="gridPaletteList"></div>
         </div>
 
-        <div class="grid-canvas-wrap">
-          <div id="gridCanvas" class="grid-canvas"></div>
-          <p class="empty-state" id="gridHint">Drag a case or unit from the left onto the floor below.</p>
+        <div class="grid-canvas-col">
+          <div class="grid-zoom-bar">
+            <button type="button" id="btnZoomOut" class="btn-secondary" title="Zoom out">&minus;</button>
+            <span id="gridZoomLevel" class="grid-zoom-level">100%</span>
+            <button type="button" id="btnZoomIn" class="btn-secondary" title="Zoom in">+</button>
+            <button type="button" id="btnZoomReset" class="btn-secondary" title="Reset zoom">Reset</button>
+          </div>
+          <div class="grid-canvas-wrap">
+            <div id="gridCanvas" class="grid-canvas"></div>
+            <p class="empty-state" id="gridHint">Drag a case or unit from the left onto the floor below.</p>
+          </div>
         </div>
 
         <div class="panel-list grid-selection">
