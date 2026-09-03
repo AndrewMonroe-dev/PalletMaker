@@ -975,11 +975,23 @@ const Viewer3D = (() => {
         </label>
         <p class="empty-state">Drag any case in the group to move it. Drag the green handle above it to rotate freely.</p>
         <div class="form-actions">
+          <button type="button" id="viewer3dFlipGroupBtn" class="btn-secondary">Face the other direction</button>
+        </div>
+        <div class="form-actions">
           <button type="button" id="viewer3dUngroupBtn" class="btn-secondary">Ungroup</button>
         </div>
       `;
       document.getElementById('viewer3dGroupAngle').addEventListener('change', (e) => {
         const ok = Grid.setGroupAngle(group.id, parseFloat(e.target.value) || 0);
+        if (!ok) alert('That rotation would overlap something else or leave the floor. Reverted.');
+        saveState(state);
+        refresh();
+      });
+      document.getElementById('viewer3dFlipGroupBtn').addEventListener('click', () => {
+        // A straight +180 to the group's own angle -- same reasoning as the single-stack "face
+        // the other direction" flip: rotating a rigid cluster exactly 180 around its own center
+        // leaves its bounding-box footprint identical, so it can't introduce a new collision.
+        const ok = Grid.setGroupAngle(group.id, group.angle + 180);
         if (!ok) alert('That rotation would overlap something else or leave the floor. Reverted.');
         saveState(state);
         refresh();

@@ -2438,6 +2438,16 @@ const Grid = (() => {
     const btnRow = document.createElement('div');
     btnRow.className = 'form-actions';
 
+    // A straight +180 to the group's own angle -- same reasoning as the single-stack "face the
+    // other direction" flip: rotating a rigid cluster exactly 180 around its own center leaves its
+    // bounding-box footprint identical, so it can never introduce a new collision/out-of-bounds
+    // case that the current (already-valid) angle didn't already have.
+    const flipBtn = document.createElement('button');
+    flipBtn.type = 'button';
+    flipBtn.className = 'btn-secondary';
+    flipBtn.textContent = 'Face the other direction';
+    flipBtn.addEventListener('click', () => setGroupAngle(group.id, group.angle + 180));
+
     const ungroupBtn = document.createElement('button');
     ungroupBtn.type = 'button';
     ungroupBtn.className = 'btn-secondary';
@@ -2450,6 +2460,7 @@ const Grid = (() => {
     deleteBtn.textContent = 'Delete group';
     deleteBtn.addEventListener('click', () => handleDeleteGroup(group.id));
 
+    btnRow.appendChild(flipBtn);
     btnRow.appendChild(ungroupBtn);
     btnRow.appendChild(deleteBtn);
     detail.appendChild(btnRow);
