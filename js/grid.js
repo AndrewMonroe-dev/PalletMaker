@@ -641,6 +641,8 @@ const Grid = (() => {
     el.className = 'grid-stack grid-topper'
       + (isTopperSelected(stack.id, topper.id) ? ' selected' : '')
       + (isMultiSelected ? ' selected' : '');
+    el.dataset.parentStackId = stack.id;
+    el.dataset.topperId = topper.id;
     el.style.left = `${(stack.x + topper.dx) * scale}px`;
     el.style.top = `${(stack.y + topper.dy) * scale}px`;
     el.style.width = `${topper.footprintW * scale}px`;
@@ -1791,10 +1793,20 @@ const Grid = (() => {
   function startStackMove(e, stack) {
     e.preventDefault();
     e.stopPropagation();
+    // Toppers ride passively on their parent stack's x/y (see commitStackMove's final position and
+    // buildTopperEl's `stack.x + topper.dx`) -- the data was already correct at drop time, but
+    // their DOM elements were never touched during the drag itself, only on the full re-render
+    // after mouseup. That made a case with units on top look like it wasn't dragging the units at
+    // all (they visually stayed put until the drop), even though the end position was always
+    // right. Collect them here so handlePointerMove can reposition them live, same as the base.
+    const canvas = document.getElementById('gridCanvas');
+    const topperEls = Array.from(canvas.querySelectorAll(`.grid-topper[data-parent-stack-id="${stack.id}"]`))
+      .map(el => ({ el, topperId: el.dataset.topperId }));
     dragOp = {
       type: 'stack-move',
       stackId: stack.id,
       el: e.currentTarget,
+      topperEls,
       startMouseX: e.clientX,
       startMouseY: e.clientY,
       startX: stack.x,
@@ -2066,6 +2078,15 @@ const Grid = (() => {
       if (dragOp.el) {
         dragOp.el.style.left = `${stack.x * scale}px`;
         dragOp.el.style.top = `${stack.y * scale}px`;
+      }
+      // Toppers ride along at the same live delta -- see startStackMove's comment.
+      if (dragOp.topperEls && dragOp.topperEls.length) {
+        dragOp.topperEls.forEach(({ el, topperId }) => {
+          const topper = stack.toppers.find(t => t.id === topperId);
+          if (!topper || !el) return;
+          el.style.left = `${(stack.x + topper.dx) * scale}px`;
+          el.style.top = `${(stack.y + topper.dy) * scale}px`;
+        });
       }
       return;
     }
