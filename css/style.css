@@ -451,6 +451,19 @@ select {
   border: 1px solid rgba(255,255,255,0.7);
 }
 
+.stack-grab-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--accent);
+  border: 2px solid white;
+  cursor: grab;
+  z-index: 6; /* above .grid-topper's z-index:2, so it stays clickable even under a full topper stack */
+  box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
+.stack-grab-handle:active { cursor: grabbing; }
+
 .grid-drag-preview {
   position: absolute;
   pointer-events: none;

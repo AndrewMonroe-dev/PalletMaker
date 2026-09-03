@@ -564,6 +564,10 @@ const Grid = (() => {
     ungroupedStacks.forEach(stack => {
       canvas.appendChild(buildStackEl(stack));
       stack.toppers.forEach(topper => canvas.appendChild(buildTopperEl(stack, topper)));
+      // Appended last (after this stack's own toppers) so it paints on top of them in DOM order,
+      // matching its z-index -- see buildStackGrabHandleEl's comment.
+      const grabHandle = buildStackGrabHandleEl(stack);
+      if (grabHandle) canvas.appendChild(grabHandle);
     });
 
     project.groups.forEach(group => {
@@ -583,6 +587,7 @@ const Grid = (() => {
     el.className = 'grid-stack'
       + (stack.id === selectedStackId ? ' selected' : '')
       + (isMultiSelected ? ' selected' : '');
+    el.dataset.stackId = stack.id;
     el.style.left = `${stack.x * scale}px`;
     el.style.top = `${stack.y * scale}px`;
     el.style.width = `${stack.footprintW * scale}px`;
@@ -617,6 +622,41 @@ const Grid = (() => {
       e.preventDefault();
       e.stopPropagation();
       addDuplicateTopItem(stack.items);
+    });
+
+    return el;
+  }
+
+  // A stack with one or more toppers can end up with its own base fully covered on screen -- three
+  // toppers packed onto a case can leave no exposed pixel of the case itself to click. Without this,
+  // there was no way to select or drag that case at all short of first dragging every topper off it.
+  // A small handle pinned to the base's top-left corner, painted above every topper (higher
+  // z-index), gives a guaranteed-clickable spot for the base regardless of topper coverage.
+  function buildStackGrabHandleEl(stack) {
+    if (!stack.toppers.length) return null;
+    const el = document.createElement('div');
+    el.className = 'stack-grab-handle';
+    el.dataset.stackId = stack.id;
+    el.style.left = `${stack.x * scale - 6}px`;
+    el.style.top = `${stack.y * scale - 6}px`;
+    el.title = 'Grab the case underneath -- drag to move it (and everything on top of it), or click to select it.';
+
+    el.addEventListener('mousedown', (e) => {
+      if (e.shiftKey) return;
+      startStackMove(e, stack);
+    });
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (e.shiftKey) {
+        toggleMultiSelect(stack.id);
+      } else {
+        selectedStackId = stack.id;
+        selectedGroupId = null;
+        selectedTopper = null;
+        selectedPalletId = null;
+        multiSelectIds.clear(); multiSelectTopperKeys.clear();
+      }
+      render();
     });
 
     return el;
@@ -1802,10 +1842,16 @@ const Grid = (() => {
     const canvas = document.getElementById('gridCanvas');
     const topperEls = Array.from(canvas.querySelectorAll(`.grid-topper[data-parent-stack-id="${stack.id}"]`))
       .map(el => ({ el, topperId: el.dataset.topperId }));
+    // The drag can be started from the base stack's own element OR its grab handle (see
+    // buildStackGrabHandleEl) -- resolve the real base element explicitly rather than trusting
+    // e.currentTarget, since a handle-initiated drag needs to move the base, not the handle.
+    const baseEl = canvas.querySelector(`.grid-stack[data-stack-id="${stack.id}"]:not(.grid-topper)`);
+    const grabHandleEl = canvas.querySelector(`.stack-grab-handle[data-stack-id="${stack.id}"]`);
     dragOp = {
       type: 'stack-move',
       stackId: stack.id,
-      el: e.currentTarget,
+      el: baseEl || e.currentTarget,
+      grabHandleEl,
       topperEls,
       startMouseX: e.clientX,
       startMouseY: e.clientY,
@@ -2078,6 +2124,10 @@ const Grid = (() => {
       if (dragOp.el) {
         dragOp.el.style.left = `${stack.x * scale}px`;
         dragOp.el.style.top = `${stack.y * scale}px`;
+      }
+      if (dragOp.grabHandleEl) {
+        dragOp.grabHandleEl.style.left = `${stack.x * scale - 6}px`;
+        dragOp.grabHandleEl.style.top = `${stack.y * scale - 6}px`;
       }
       // Toppers ride along at the same live delta -- see startStackMove's comment.
       if (dragOp.topperEls && dragOp.topperEls.length) {
