@@ -32,6 +32,17 @@ const Viewer3D = (() => {
   let lightAzimuth = 45; // degrees, matches the sliders' default values in index.html
   let lightElevation = 55;
 
+  // ---- Second, optional directional light -- off by default so existing projects render
+  // identically until the user opts in. Deliberately never casts a shadow: a second shadow-casting
+  // light doubles the shadow-map render cost and two overlapping shadow directions from the same
+  // object reads as visually confusing (which one is "the" shadow) rather than more realistic --
+  // this is meant as a fill/rim light, not a second key light. ----
+  let dirLight2 = null;
+  let light2Enabled = false;
+  let lightAzimuth2 = 225;
+  let lightElevation2 = 40;
+  let lightIntensity2 = 0.7;
+
   // ---- Image panel selection/manipulation state ----
   const MIN_PANEL_SIZE = 1; // inches
   let panelMeshMap = {};       // panel id -> its plane mesh, rebuilt every buildScene()
@@ -70,6 +81,25 @@ const Viewer3D = (() => {
     document.getElementById('viewer3dLightElevation').addEventListener('input', (e) => {
       lightElevation = parseFloat(e.target.value) || 0;
       updateLightPosition();
+    });
+    document.getElementById('viewer3dLight2Enabled').addEventListener('change', (e) => {
+      light2Enabled = e.target.checked;
+      document.getElementById('viewer3dLight2Controls').classList.toggle('hidden', !light2Enabled);
+      if (dirLight2) dirLight2.visible = light2Enabled;
+      markDirty();
+    });
+    document.getElementById('viewer3dLight2Azimuth').addEventListener('input', (e) => {
+      lightAzimuth2 = parseFloat(e.target.value) || 0;
+      updateLight2Position();
+    });
+    document.getElementById('viewer3dLight2Elevation').addEventListener('input', (e) => {
+      lightElevation2 = parseFloat(e.target.value) || 0;
+      updateLight2Position();
+    });
+    document.getElementById('viewer3dLight2Intensity').addEventListener('input', (e) => {
+      lightIntensity2 = (parseFloat(e.target.value) || 0) / 100;
+      if (dirLight2) dirLight2.intensity = lightIntensity2;
+      markDirty();
     });
     bindCanvasInteraction();
     bindWindowResize();
@@ -1099,6 +1129,12 @@ const Viewer3D = (() => {
     scene.add(dirLight);
     updateLightPosition();
 
+    dirLight2 = new THREE.DirectionalLight(0xffffff, lightIntensity2);
+    dirLight2.castShadow = false; // fill light only -- see the state comment above for why
+    dirLight2.visible = light2Enabled;
+    scene.add(dirLight2);
+    updateLight2Position();
+
     const floorGeo = new THREE.PlaneGeometry(project.footprintWidth, project.footprintDepth);
     const floorMat = new THREE.MeshStandardMaterial({ color: 0x1d2026, side: THREE.DoubleSide });
     const floor = new THREE.Mesh(floorGeo, floorMat);
@@ -1387,6 +1423,24 @@ const Viewer3D = (() => {
     );
     dirLight.target.position.set(0, targetY, 0);
     dirLight.target.updateMatrixWorld();
+    markDirty();
+  }
+
+  // Same spherical positioning as updateLightPosition, for the optional second light.
+  function updateLight2Position() {
+    if (!dirLight2 || !project) return;
+    const maxDim = Math.max(project.footprintWidth, project.footprintDepth);
+    const dist = maxDim * 1.5 + 60;
+    const targetY = maxDim / 6;
+    const azRad = (lightAzimuth2 * Math.PI) / 180;
+    const elRad = (lightElevation2 * Math.PI) / 180;
+    dirLight2.position.set(
+      dist * Math.sin(azRad) * Math.cos(elRad),
+      targetY + dist * Math.sin(elRad),
+      dist * Math.cos(azRad) * Math.cos(elRad)
+    );
+    dirLight2.target.position.set(0, targetY, 0);
+    dirLight2.target.updateMatrixWorld();
     markDirty();
   }
 

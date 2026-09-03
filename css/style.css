@@ -589,6 +589,16 @@ select {
 }
 .viewer3d-light-controls input[type="range"] { width: 100%; }
 
+.viewer3d-light2-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
 .viewer3d-panel-list {
   display: flex;
   flex-direction: column;
