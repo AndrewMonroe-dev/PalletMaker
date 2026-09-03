@@ -544,6 +544,18 @@ const Grid = (() => {
     };
     canvas.ondrop = handleDrop;
 
+    // Pallet markers render FIRST, before any stack/group -- both sit at the same z-index (0), and
+    // with no z-index set, later DOM order wins hit-testing/paint order for overlapping elements.
+    // A marker appended last (as it briefly was) sat on top of every case underneath it, silently
+    // swallowing every click/drag meant for that case -- move, multi-select for grouping, and
+    // ungroup all looked "broken" because the pointer event never reached the stack at all.
+    // Rendering markers first means any real stack/topper/group painted after it wins the overlap.
+    project.pallets.filter(p => p.visible).forEach(pallet => {
+      canvas.appendChild(buildPalletEl(pallet));
+      const handle = buildPalletRotateHandleEl(pallet);
+      if (handle) canvas.appendChild(handle);
+    });
+
     const ungroupedStacks = project.stacks.filter(s => !s.groupId);
     document.getElementById('gridHint').classList.toggle(
       'hidden', project.stacks.length > 0 || project.groups.length > 0
@@ -561,12 +573,6 @@ const Grid = (() => {
         stack.toppers.forEach(topper => canvas.appendChild(buildGroupTopperEl(group, stack, worldCenter, topper)));
       });
       const handle = buildRotateHandleEl(group, members);
-      if (handle) canvas.appendChild(handle);
-    });
-
-    project.pallets.filter(p => p.visible).forEach(pallet => {
-      canvas.appendChild(buildPalletEl(pallet));
-      const handle = buildPalletRotateHandleEl(pallet);
       if (handle) canvas.appendChild(handle);
     });
   }
