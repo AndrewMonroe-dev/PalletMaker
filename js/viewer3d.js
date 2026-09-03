@@ -1087,27 +1087,57 @@ const Viewer3D = (() => {
     startRenderLoop();
   }
 
+  // Frees every geometry/material/texture in a scene before it's discarded. Three.js does NOT do
+  // this automatically -- dropping a reference to a Scene just makes it eligible for JS garbage
+  // collection, but every buffer it already uploaded to the GPU (geometry, material, and any
+  // texture -- item photos included) stays resident in VRAM/driver memory until explicitly
+  // disposed. buildScene() used to rebuild the entire scene AND create a brand-new
+  // WebGLRenderer/canvas/WebGL-context on every single call (every visit to this tab, every
+  // project switch while on it) without ever disposing the previous one's contents -- a real,
+  // unbounded leak over a long session that's consistent with a machine needing a hard restart to
+  // recover, even a powerful GPU: browsers cap the number of *live* WebGL contexts a page can hold
+  // (commonly parseInt in the teens) and force-lose the oldest once exceeded, and the per-frame
+  // resources leaked before that point still pin real GPU/driver memory the whole time.
+  function disposeSceneContents(oldScene) {
+    if (!oldScene) return;
+    oldScene.traverse((obj) => {
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) {
+        const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+        materials.forEach((mat) => {
+          Object.keys(mat).forEach((key) => {
+            const value = mat[key];
+            if (value && value.isTexture) value.dispose();
+          });
+          mat.dispose();
+        });
+      }
+    });
+  }
+
   function buildScene() {
     const container = document.getElementById('viewer3dCanvas');
-
-    if (renderer) {
-      renderer.dispose();
-    }
-    container.innerHTML = '';
-
     const width = container.clientWidth || 700;
     const height = container.clientHeight || 500;
+
+    // The renderer (and the WebGL context/canvas it owns) is created exactly once and reused for
+    // every subsequent rebuild -- see disposeSceneContents' comment above for why recreating it
+    // every time was a real leak. Only the Scene itself (lights, floor, meshes) gets rebuilt fresh.
+    if (!renderer) {
+      renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      container.innerHTML = '';
+      container.appendChild(renderer.domElement);
+    }
+    renderer.setSize(width, height);
+
+    disposeSceneContents(scene);
 
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0a0c0f);
 
     camera = new THREE.PerspectiveCamera(45, width / height, 1, 5000);
-
-    renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-    renderer.setSize(width, height);
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    container.appendChild(renderer.domElement);
 
     const maxDim = Math.max(project.footprintWidth, project.footprintDepth);
 
