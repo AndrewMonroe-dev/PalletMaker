@@ -2789,7 +2789,7 @@ const Grid = (() => {
 
   return {
     init, refresh, getActiveProject, getGroupMembers, resolveSwatch, computeTally,
-    groupStacks: groupStackIds, setGroupAngle, moveGroup,
+    groupStacks: groupStackIds, setGroupAngle, moveGroup, ungroupStacks: handleUngroup,
     PALLET_W, PALLET_D, movePallet, setPalletAngle, handleDuplicatePallet, handleDeletePallet
   };
 })();

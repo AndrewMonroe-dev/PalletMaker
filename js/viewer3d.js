@@ -974,11 +974,19 @@ const Viewer3D = (() => {
           <input type="number" id="viewer3dGroupAngle" step="1" value="${Math.round(group.angle)}">
         </label>
         <p class="empty-state">Drag any case in the group to move it. Drag the green handle above it to rotate freely.</p>
+        <div class="form-actions">
+          <button type="button" id="viewer3dUngroupBtn" class="btn-secondary">Ungroup</button>
+        </div>
       `;
       document.getElementById('viewer3dGroupAngle').addEventListener('change', (e) => {
         const ok = Grid.setGroupAngle(group.id, parseFloat(e.target.value) || 0);
         if (!ok) alert('That rotation would overlap something else or leave the floor. Reverted.');
         saveState(state);
+        refresh();
+      });
+      document.getElementById('viewer3dUngroupBtn').addEventListener('click', () => {
+        Grid.ungroupStacks(group.id);
+        selectedGroupId3D = null;
         refresh();
       });
       return;
