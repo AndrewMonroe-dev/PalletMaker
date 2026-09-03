@@ -1182,12 +1182,14 @@ const Grid = (() => {
   // Axis-aligned rects of everything currently on the floor (ungrouped stacks, plus members of
   // any group that isn't meaningfully rotated), for edge-snapping. Ignores rotated groups --
   // snapping flush against an angled neighbor isn't a well-defined single position.
-  function collectAxisAlignedRects(excludeStackId) {
+  function collectAxisAlignedRects(opts) {
+    const excludeStackId = (typeof opts === 'string' || opts === null) ? opts : (opts && opts.excludeStackId) || null;
+    const excludeGroupId = (opts && typeof opts === 'object' && opts.excludeGroupId) || null;
     const list = [];
     project.stacks.filter(s => !s.groupId && s.id !== excludeStackId).forEach(s => {
       list.push({ x: s.x, y: s.y, w: s.footprintW, d: s.footprintD });
     });
-    project.groups.forEach(g => {
+    project.groups.filter(g => g.id !== excludeGroupId).forEach(g => {
       const angleNorm = ((g.angle % 360) + 360) % 360;
       if (angleNorm > 0.5 && angleNorm < 359.5) return;
       getGroupMembers(g).forEach(({ stack, worldCenter }) => {
@@ -1234,6 +1236,9 @@ const Grid = (() => {
   // If (x,y) is close to sitting flush against a neighbor's edge but not exactly on it, snap it
   // there -- turns "aimed close but missed by an inch" into a clean adjacent placement instead
   // of a rejected near-overlap or an awkward gap.
+  // excludeStackId can be a plain stack id (legacy call sites) or an opts object
+  // { excludeStackId, excludeGroupId } -- the latter lets a group's own move exclude every one of
+  // its own members at once instead of just one stack id.
   function snapToNeighborEdges(x, y, w, d, excludeStackId) {
     const rects = collectAxisAlignedRects(excludeStackId);
     const tol = edgeSnapToleranceIn();
@@ -1518,9 +1523,60 @@ const Grid = (() => {
     const group = project.groups.find(g => g.id === groupId);
     if (!group) return false;
     const before = snapshotProject();
-    const ok = tryApplyGroupTransform(group, centerX, centerY, group.angle);
+    const snapped = snapGroupPosition(group, centerX, centerY);
+    const ok = tryApplyGroupTransform(group, snapped.centerX, snapped.centerY, group.angle);
     if (ok) pushUndo(before);
     return ok;
+  }
+
+  // Same transform as getGroupMembers, but for a hypothetical center rather than the group's own
+  // persisted centerX/centerY -- lets snapping evaluate "what would the bounding box be if I
+  // committed here" without mutating the real group first.
+  function getGroupMembersAt(group, centerX, centerY) {
+    const a = (group.angle * Math.PI) / 180;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    return group.memberIds.map(memberId => {
+      const m = group.members[memberId];
+      const stack = project.stacks.find(s => s.id === memberId);
+      if (!stack) return null;
+      return {
+        stack,
+        worldCenter: { x: centerX + m.dx * cos - m.dy * sin, y: centerY + m.dx * sin + m.dy * cos }
+      };
+    }).filter(Boolean);
+  }
+
+  // Groups never had any snapping at all -- a plain stack/topper gets both a 1in grid snap and
+  // edge/corner snapping against its neighbors (see snapToNeighborEdges above), but a group move
+  // went straight from raw mouse pixels to a collision check, so lining a multi-case group up flush
+  // against another stack required pixel-perfect mouse placement. This gives a group move the same
+  // treatment: snap the group's own bounding box's raw corner to the 1in grid, then to a flush
+  // neighbor edge if one's close, then translate that correction back onto the group's center.
+  // Edge/corner snapping only applies when the group itself is axis-aligned (angle at/near a
+  // multiple of 90) -- same reasoning as collectAxisAlignedRects skipping rotated neighbors: "flush
+  // against this edge" isn't a single well-defined position once the shape being placed is at an
+  // arbitrary angle.
+  function snapGroupPosition(group, centerX, centerY) {
+    const snappedCenterX = snap(centerX);
+    const snappedCenterY = snap(centerY);
+
+    const angleNorm = ((group.angle % 360) + 360) % 360;
+    const nearestQuarterTurn = Math.round(angleNorm / 90) * 90;
+    const isAxisAligned = Math.abs(angleNorm - nearestQuarterTurn) < 0.5;
+    if (!isAxisAligned) return { centerX: snappedCenterX, centerY: snappedCenterY };
+
+    const members = getGroupMembersAt(group, snappedCenterX, snappedCenterY);
+    if (!members.length) return { centerX: snappedCenterX, centerY: snappedCenterY };
+
+    const bbox = groupBoundingBox(group, members);
+    const w = bbox.maxX - bbox.minX;
+    const d = bbox.maxY - bbox.minY;
+    const snappedCorner = snapToNeighborEdges(bbox.minX, bbox.minY, w, d, { excludeGroupId: group.id });
+
+    return {
+      centerX: snappedCenterX + (snappedCorner.x - bbox.minX),
+      centerY: snappedCenterY + (snappedCorner.y - bbox.minY)
+    };
   }
 
   function tryApplyGroupTransform(group, centerX, centerY, angle) {
@@ -2259,7 +2315,13 @@ const Grid = (() => {
       return;
     }
 
-    const ok = tryApplyGroupTransform(group, group.centerX, group.centerY, group.angle);
+    // Only a real move gets the snap treatment -- during a pure rotate, centerX/centerY are
+    // untouched, and snapping them here could nudge the group's position as a surprising side
+    // effect of just dialing in an angle.
+    const target = op.type === 'move'
+      ? snapGroupPosition(group, group.centerX, group.centerY)
+      : { centerX: group.centerX, centerY: group.centerY };
+    const ok = tryApplyGroupTransform(group, target.centerX, target.centerY, group.angle);
     if (ok) {
       pushUndo(op.beforeSnapshot);
     } else {
