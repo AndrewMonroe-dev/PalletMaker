@@ -400,24 +400,29 @@
 </main>
 
 <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
-<!-- GLTFExporter/USDZExporter only ship as ES modules at this three.js version (no UMD build for
-     individual examples/jsm addons), and those module files import their own "three" via a bare
-     specifier -- which the browser can't resolve without this import map telling it where "three"
-     actually is (confirmed live: without it, the import throws "Failed to resolve module specifier
-     'three'" and silently leaves window.GLTFExporter undefined). Imported and attached to window so
-     the rest of the app's plain <script> files (loaded after this one finishes, since module
-     scripts are always deferred) can use them like any other global without themselves becoming
-     modules. -->
+<!-- AR export deliberately uses its OWN, much newer three.js (0.160.0) loaded as ES modules under
+     the "three" bare specifier, entirely separate from the r0.128 UMD build above that the live
+     interactive 3D viewer runs on -- confirmed live that r0.128's bundled USDZExporter produces a
+     structurally valid but visually broken file: real iPhone Quick Look rendered every case as
+     flat gray with zero texture. Diffing against 0.160's USDZExporter source explained why: it
+     ships a `quickLookCompatible` option specifically working around two documented, still-open
+     Apple texture-UV bugs (FB10036297, FB11442287) that the old exporter has no idea about, plus
+     proper AR plane-anchoring scene metadata the old one never emits at all. The AR export scene
+     is built entirely fresh from project data (see buildArExportScene in viewer3d.js) rather than
+     cloning the live r0.128 scene's mesh objects, specifically so it never has to hand r0.128-built
+     objects to this newer, incompatible-at-the-class-level three.js instance. -->
 <script type="importmap">
 {
   "imports": {
-    "three": "https://unpkg.com/three@0.128.0/build/three.module.js"
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
   }
 }
 </script>
 <script type="module">
-  import { GLTFExporter } from 'https://unpkg.com/three@0.128.0/examples/jsm/exporters/GLTFExporter.js';
-  import { USDZExporter } from 'https://unpkg.com/three@0.128.0/examples/jsm/exporters/USDZExporter.js';
+  import * as THREE_AR from 'three';
+  import { GLTFExporter } from 'https://unpkg.com/three@0.160.0/examples/jsm/exporters/GLTFExporter.js';
+  import { USDZExporter } from 'https://unpkg.com/three@0.160.0/examples/jsm/exporters/USDZExporter.js';
+  window.THREE_AR = THREE_AR;
   window.GLTFExporter = GLTFExporter;
   window.USDZExporter = USDZExporter;
 </script>

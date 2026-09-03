@@ -1348,35 +1348,32 @@ const Viewer3D = (() => {
   const IN_TO_M = 0.0254; // glTF/USDZ (and the ARKit/ARCore viewers that consume them) assume
                            // 1 unit = 1 meter, but every mesh in this scene is built in inches.
 
-  // Builds a standalone scene containing only the real placed content -- item boxes and image
-  // panels, plus a fresh floor plane -- scaled from inches to meters. Deliberately NOT a reference
-  // to (or mutation of) the live interactive `scene`: that one also carries selection outlines,
-  // resize/rotate handles, and the on-screen grid-line helper, none of which belong in an AR
-  // placement of the actual display. stackMeshMap/panelMeshMap already track exactly the real
-  // content meshes (rebuilt every buildScene()), so cloning off of those is enough -- no need to
-  // re-derive geometry from project data a second time.
-  // USDZExporter (this three.js version) unconditionally reads material.normalMap/.aoMap/
-  // .roughnessMap/.metalnessMap/.emissiveMap and treats anything `!== null` as "there's a texture
-  // here, read its .uuid" -- MeshBasicMaterial (image panels) doesn't declare those properties at
-  // all, so they read back `undefined` (which IS `!== null`), and it crashes reading .uuid off
-  // nothing. Rebuilding every exported mesh's material as a plain MeshStandardMaterial (which
-  // explicitly defaults all of those to null) sidesteps the bug regardless of what material type
-  // the live scene actually used.
-  function toArExportMaterial(mat) {
-    return new THREE.MeshStandardMaterial({
-      color: mat.color ? mat.color.clone() : 0x888888,
-      map: mat.map || null
+  // The AR export is built entirely fresh from PROJECT DATA using THREE_AR (three@0.160, loaded
+  // separately -- see index.html) rather than cloning meshes from the live interactive `scene`
+  // (three@0.128, the UMD build this whole file otherwise runs on). Two reasons, both confirmed
+  // live, not theoretical: (1) r0.128's bundled USDZExporter produced a structurally valid but
+  // visually broken file -- real iPhone Quick Look rendered every case as flat gray, no texture,
+  // because it lacks fixes for documented real-device texture-UV bugs (and proper AR-anchoring
+  // scene metadata) that 0.160's exporter has. (2) handing r0.128-constructed Mesh/Texture
+  // instances to 0.160's exporters is itself risky -- newer three.js internals (e.g. Texture.source)
+  // don't exist on older objects, so reusing live meshes across versions would just trade one
+  // breakage for another. Rebuilding from data sidesteps that: it depends only on plain data
+  // (project.stacks/groups/imagePanels, swatch colors/images) and the handful of pure-math helpers
+  // already in this file (toSceneX/toSceneZ/getItemFootprint/getItemHeight/etc.), none of which
+  // are tied to either three.js instance.
+
+  function loadArTexture(dataUrl) {
+    if (!dataUrl) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      new THREE_AR.TextureLoader().load(dataUrl, resolve, undefined, () => resolve(null));
     });
   }
 
-  // Bakes the inches-to-meters conversion into an object's OWN local position/scale, rather than
-  // scaling the parent scene once and letting the exporters inherit it -- confirmed live (by
-  // unzipping an exported .usdz, which is just a zip archive holding a plain-text model.usda, and
-  // reading the raw point coordinates) that USDZExporter ignores a parent Object3D's transform
-  // entirely and only ever bakes each individual mesh's own local matrix. A scene-level scale was
-  // silently dropped, so the exported model was placed in AR at its raw inch dimensions
-  // mis-declared as meters -- a ~39x-too-large floor that reads as "just an endless flat plane"
-  // once you're standing on it, exactly what this shipped as before being caught here.
+  // Bakes the inches-to-meters conversion into an object's OWN local position/scale (not a
+  // parent-level scale on the scene) -- confirmed live (by unzipping an exported .usdz, which is
+  // just a zip archive holding a plain-text model.usda, and reading the raw coordinates) that
+  // USDZExporter ignores a parent Object3D's transform entirely and only ever bakes each
+  // individual mesh's own local matrix.
   function scaleForAr(object) {
     object.position.multiplyScalar(IN_TO_M);
     object.scale.multiplyScalar(IN_TO_M);
@@ -1384,43 +1381,100 @@ const Viewer3D = (() => {
     // only get (re)computed during a renderer.render() traversal, which this orphan export scene
     // never gets. USDZExporter specifically reads object.matrixWorld (confirmed against its own
     // source), so without forcing this recompute the change above silently has zero effect on the
-    // exported file -- exactly what happened here: verified live by unzipping the exported .usdz
-    // (it's a plain zip archive around a text model.usda) and finding its point/transform data
-    // still in raw, un-converted inches even after this function ran.
+    // exported file.
     object.updateMatrixWorld(true);
     return object;
   }
 
-  function buildArExportScene() {
-    if (!project) return null;
-    const exportScene = new THREE.Scene();
+  // One box mesh for the AR export -- same "front photo if the swatch has one, otherwise its flat
+  // color" idea as the live buildBoxMesh, but collapsed to a single material covering every face
+  // (AR here is about checking real-world scale/fit, not per-face photorealism, and USDZExporter
+  // only supports one material per mesh at all).
+  async function buildArBoxMesh(width, height, depth, sw) {
+    const mat = new THREE_AR.MeshStandardMaterial({ color: sw ? sw.color : 0x888888 });
+    if (sw && sw.image) {
+      const tex = await loadArTexture(sw.image);
+      if (tex) mat.map = tex;
+    }
+    const mesh = new THREE_AR.Mesh(new THREE_AR.BoxGeometry(width, height, depth), mat);
+    return mesh;
+  }
 
-    const floorGeo = new THREE.PlaneGeometry(project.footprintWidth, project.footprintDepth);
-    const floorMat = new THREE.MeshStandardMaterial({ color: 0x1d2026, side: THREE.DoubleSide });
-    const floor = new THREE.Mesh(floorGeo, floorMat);
+  // Mirrors addItemColumn's stacking math (grid.js/viewer3d.js's live version), adding each box
+  // straight into the export scene as it goes.
+  async function buildArItemColumn(exportScene, items, centerGridX, centerGridY, angleDeg, startHeight, fallbackW, fallbackD) {
+    let yCursor = startHeight;
+    for (const item of items) {
+      const itemHeight = getItemHeight(item);
+      const footprint = getItemFootprint(item) || { w: fallbackW, d: fallbackD };
+      const sw = Grid.resolveSwatch(item.itemTypeId, item.swatchId);
+      const mesh = await buildArBoxMesh(footprint.w, itemHeight, footprint.d, sw);
+      mesh.position.set(toSceneX(centerGridX), yCursor + itemHeight / 2, toSceneZ(centerGridY));
+      mesh.rotation.y = -(angleDeg * Math.PI) / 180;
+      exportScene.add(scaleForAr(mesh));
+      yCursor += itemHeight;
+    }
+    return yCursor;
+  }
+
+  // Mirrors addStackMeshes: the base column, then any toppers riding on top of it, offset within
+  // the stack's own footprint and rotated rigidly with it -- same transform as everywhere else
+  // toppers are positioned in this file.
+  async function buildArStackMeshes(exportScene, stack, centerGridX, centerGridY, angleDeg) {
+    const baseHeight = await buildArItemColumn(exportScene, stack.items, centerGridX, centerGridY, angleDeg, 0, stack.footprintW, stack.footprintD);
+    for (const topper of (stack.toppers || [])) {
+      const offsetX = topper.dx + topper.footprintW / 2 - stack.footprintW / 2;
+      const offsetY = topper.dy + topper.footprintD / 2 - stack.footprintD / 2;
+      const a = (angleDeg * Math.PI) / 180;
+      const cos = Math.cos(a), sin = Math.sin(a);
+      const topperCenterX = centerGridX + offsetX * cos - offsetY * sin;
+      const topperCenterY = centerGridY + offsetX * sin + offsetY * cos;
+      await buildArItemColumn(exportScene, topper.items, topperCenterX, topperCenterY, angleDeg, baseHeight, topper.footprintW, topper.footprintD);
+    }
+  }
+
+  async function buildArImagePanel(panel) {
+    const mat = new THREE_AR.MeshStandardMaterial({ color: 0xffffff, side: THREE_AR.DoubleSide });
+    const tex = await loadArTexture(panel.dataUrl);
+    if (tex) {
+      // Same UV-mirror trick as the live Flip Horizontal/Vertical panel controls.
+      tex.wrapS = THREE_AR.RepeatWrapping;
+      tex.wrapT = THREE_AR.RepeatWrapping;
+      tex.repeat.x = panel.flipH ? -1 : 1;
+      tex.repeat.y = panel.flipV ? -1 : 1;
+      tex.offset.x = panel.flipH ? 1 : 0;
+      tex.offset.y = panel.flipV ? 1 : 0;
+      mat.map = tex;
+    }
+    const mesh = new THREE_AR.Mesh(new THREE_AR.PlaneGeometry(panel.width, panel.height), mat);
+    mesh.position.set(toSceneX(panel.x), panel.heightOffGround + panel.height / 2, toSceneZ(panel.y));
+    mesh.rotation.y = -(panel.rotationY * Math.PI) / 180;
+    return mesh;
+  }
+
+  async function buildArExportScene() {
+    if (!project) return null;
+    const exportScene = new THREE_AR.Scene();
+
+    const floor = new THREE_AR.Mesh(
+      new THREE_AR.PlaneGeometry(project.footprintWidth, project.footprintDepth),
+      new THREE_AR.MeshStandardMaterial({ color: 0x1d2026, side: THREE_AR.DoubleSide })
+    );
     floor.rotation.x = -Math.PI / 2;
     exportScene.add(scaleForAr(floor));
 
-    // Item boxes use a 6-entry material array live (buildBoxMesh) so only the front face shows
-    // the case photo -- confirmed live that USDZExporter at this three.js version can't handle a
-    // multi-material mesh at all (throws deep inside its own traverse callback). Collapsed to one
-    // material for the AR export: AR here is for checking real-world scale and fit, not per-face
-    // photorealism, so showing the case photo on every face is a reasonable simplification rather
-    // than a flat gray box.
-    Object.values(stackMeshMap).forEach(box => {
-      const clone = box.clone();
-      const mat = Array.isArray(clone.material) ? (clone.material[4] || clone.material[0]) : clone.material;
-      clone.material = toArExportMaterial(mat);
-      exportScene.add(scaleForAr(clone));
-    });
-    // Image panels use a plain MeshBasicMaterial live -- also confirmed live to crash the same
-    // USDZExporter traverse (see toArExportMaterial above for why), independently of the box
-    // multi-material issue above.
-    Object.values(panelMeshMap).forEach(panel => {
-      const clone = panel.clone();
-      clone.material = toArExportMaterial(clone.material);
-      exportScene.add(scaleForAr(clone));
-    });
+    for (const stack of project.stacks.filter(s => !s.groupId)) {
+      await buildArStackMeshes(exportScene, stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, stack.facingFlipped ? 180 : 0);
+    }
+    for (const group of project.groups) {
+      for (const { stack, worldCenter } of Grid.getGroupMembers(group)) {
+        await buildArStackMeshes(exportScene, stack, worldCenter.x, worldCenter.y, group.angle);
+      }
+    }
+    for (const panel of (project.imagePanels || [])) {
+      const mesh = await buildArImagePanel(panel);
+      exportScene.add(scaleForAr(mesh));
+    }
 
     return exportScene;
   }
@@ -1428,29 +1482,23 @@ const Viewer3D = (() => {
   function exportGlb(exportScene) {
     return new Promise((resolve, reject) => {
       const exporter = new GLTFExporter();
-      // This three.js version's GLTFExporter.parse signature is (input, onDone, options) -- no
-      // separate onError callback. Confirmed live: calling it with a 4-arg (onDone, onError,
-      // options) signature silently passed the onError function in as `options`, so
-      // `options.binary` read as undefined and it silently fell back to plain (non-binary) JSON
-      // output instead of the requested GLB ArrayBuffer -- model-viewer then failed trying to
-      // JSON.parse what should have been binary data. Errors from this call are all synchronous
-      // (anything inside its own internal Promise chain isn't reachable from out here at all).
-      try {
-        exporter.parse(
-          exportScene,
-          (result) => resolve(new Blob([result], { type: 'model/gltf-binary' })),
-          { binary: true }
-        );
-      } catch (err) {
-        reject(err);
-      }
+      exporter.parse(
+        exportScene,
+        (result) => resolve(new Blob([result], { type: 'model/gltf-binary' })),
+        (err) => reject(err),
+        { binary: true }
+      );
     });
   }
 
   function exportUsdz(exportScene) {
     return new Promise((resolve, reject) => {
       const exporter = new USDZExporter();
-      exporter.parse(exportScene)
+      // quickLookCompatible works around documented, still-open Apple bugs (FB10036297,
+      // FB11442287) in how real iPhone Quick Look interprets texture UV repeat/offset -- without
+      // it, textures can render subtly misaligned on-device even though they look correct in any
+      // spec-compliant USD viewer (including the desktop preview here).
+      exporter.parse(exportScene, { quickLookCompatible: true })
         .then(result => resolve(new Blob([result], { type: 'model/vnd.usdz+zip' })))
         .catch(reject);
     });
@@ -1458,7 +1506,7 @@ const Viewer3D = (() => {
 
   async function handleViewInAr() {
     if (!project) return;
-    if (typeof GLTFExporter === 'undefined' || typeof USDZExporter === 'undefined' || !customElements.get('model-viewer')) {
+    if (typeof THREE_AR === 'undefined' || typeof GLTFExporter === 'undefined' || typeof USDZExporter === 'undefined' || !customElements.get('model-viewer')) {
       alert('The AR export libraries failed to load (check your internet connection) and try again.');
       return;
     }
@@ -1470,7 +1518,7 @@ const Viewer3D = (() => {
     btn.disabled = true;
 
     try {
-      const exportScene = buildArExportScene();
+      const exportScene = await buildArExportScene();
       if (!exportScene) return;
 
       // Both formats are built up front (not lazily per-platform) since there's no reliable way
