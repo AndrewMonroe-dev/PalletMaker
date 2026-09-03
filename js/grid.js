@@ -14,6 +14,8 @@ const Grid = (() => {
   const ZOOM_MIN = 0.25;
   const ZOOM_MAX = 4;
   const ZOOM_STEP = 0.25;
+  const PALLET_W = 48; // standard grocery pallet footprint, inches -- fixed, not user-editable
+  const PALLET_D = 40;
 
   // A 1x1 transparent gif, used as a blank native drag image -- the snapped live preview drawn on
   // the canvas during dragover is the only "where will this land" indicator; the cursor itself
@@ -31,6 +33,7 @@ const Grid = (() => {
   let multiSelectIds = new Set();  // ungrouped stack ids selected for grouping
   let multiSelectTopperKeys = new Set(); // "stackId:topperId" keys for toppers selected for grouping
   let selectedGroupId = null;      // a group selected
+  let selectedPalletId = null;     // a pallet footprint marker selected
 
   let dragOp = null; // in-progress group move/rotate drag state
   let creatingNew = false; // true while the "create/import a project" form is forced open
@@ -71,6 +74,7 @@ const Grid = (() => {
     document.getElementById('btnZoomIn').addEventListener('click', () => setZoom(zoomLevel + ZOOM_STEP));
     document.getElementById('btnZoomOut').addEventListener('click', () => setZoom(zoomLevel - ZOOM_STEP));
     document.getElementById('btnZoomReset').addEventListener('click', () => setZoom(1));
+    document.getElementById('btnAddPallet').addEventListener('click', handleAddPallet);
     // Ctrl/Cmd+wheel over the canvas zooms the grid instead of the whole page, matching the
     // browser's own page-zoom gesture so it reads as familiar rather than a bespoke control.
     document.querySelector('.grid-canvas-wrap').addEventListener('wheel', (e) => {
@@ -122,6 +126,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     selectedTopper = null;
+    selectedPalletId = null;
     multiSelectIds.clear(); multiSelectTopperKeys.clear();
     saveState(state);
     render();
@@ -146,6 +151,13 @@ const Grid = (() => {
     if (project && !project.groups) project.groups = [];
     if (project && !project.imagePanels) project.imagePanels = [];
     ensureToppersField(project);
+    ensurePalletsField(project);
+  }
+
+  // Projects saved before pallet markers existed have no `pallets` array.
+  function ensurePalletsField(proj) {
+    if (!proj) return;
+    if (!proj.pallets) proj.pallets = [];
   }
 
   // Projects saved before toppers existed have no `toppers` array on their stacks.
@@ -174,7 +186,8 @@ const Grid = (() => {
       footprintDepth: depth,
       stacks: [],
       groups: [],
-      imagePanels: []
+      imagePanels: [],
+      pallets: []
     };
     state.projects.push(newProject);
     state.activeProjectId = newProject.id;
@@ -183,6 +196,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     selectedTopper = null;
+    selectedPalletId = null;
     multiSelectIds.clear(); multiSelectTopperKeys.clear();
     clearHistory();
     zoomLevel = 1;
@@ -197,6 +211,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     selectedTopper = null;
+    selectedPalletId = null;
     multiSelectIds.clear(); multiSelectTopperKeys.clear();
     clearHistory();
     zoomLevel = 1;
@@ -213,6 +228,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     selectedTopper = null;
+    selectedPalletId = null;
     multiSelectIds.clear(); multiSelectTopperKeys.clear();
     clearHistory();
     saveState(state);
@@ -246,6 +262,7 @@ const Grid = (() => {
         imported.groups = imported.groups || [];
         imported.imagePanels = imported.imagePanels || [];
         ensureToppersField(imported);
+        ensurePalletsField(imported);
         state.projects.push(imported);
         state.activeProjectId = imported.id;
         loadActiveProject();
@@ -253,6 +270,7 @@ const Grid = (() => {
         selectedStackId = null;
         selectedGroupId = null;
     selectedTopper = null;
+        selectedPalletId = null;
         multiSelectIds.clear(); multiSelectTopperKeys.clear();
         clearHistory();
         saveState(state);
@@ -313,9 +331,50 @@ const Grid = (() => {
       `${project.footprintWidth}"W x ${project.footprintDepth}"D floor`;
 
     renderPalette();
+    renderPalletList();
     renderCanvas();
     renderSelection();
     renderTally();
+  }
+
+  function renderPalletList() {
+    const listEl = document.getElementById('gridPalletList');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+
+    if (project.pallets.length === 0) {
+      listEl.innerHTML = '<p class="empty-state">No pallet markers yet.</p>';
+      return;
+    }
+
+    project.pallets.forEach((pallet, i) => {
+      const row = document.createElement('div');
+      row.className = 'palette-chip' + (pallet.id === selectedPalletId ? ' selected' : '');
+      row.style.cursor = 'pointer';
+
+      const showCheckbox = document.createElement('input');
+      showCheckbox.type = 'checkbox';
+      showCheckbox.checked = pallet.visible;
+      showCheckbox.title = 'Show this pallet marker on the floor';
+      showCheckbox.addEventListener('click', (e) => e.stopPropagation());
+      showCheckbox.addEventListener('change', () => setPalletVisible(pallet.id, showCheckbox.checked));
+
+      const text = document.createElement('div');
+      text.className = 'chip-text';
+      text.innerHTML = `<span class="chip-name">Pallet ${i + 1}</span><span class="chip-sub">${PALLET_W}"x${PALLET_D}", ${Math.round(pallet.angle)}&deg;</span>`;
+
+      row.appendChild(showCheckbox);
+      row.appendChild(text);
+      row.addEventListener('click', () => {
+        selectedPalletId = pallet.id;
+        selectedStackId = null;
+        selectedGroupId = null;
+        selectedTopper = null;
+        multiSelectIds.clear(); multiSelectTopperKeys.clear();
+        render();
+      });
+      listEl.appendChild(row);
+    });
   }
 
   function renderPalette() {
@@ -504,6 +563,12 @@ const Grid = (() => {
       const handle = buildRotateHandleEl(group, members);
       if (handle) canvas.appendChild(handle);
     });
+
+    project.pallets.filter(p => p.visible).forEach(pallet => {
+      canvas.appendChild(buildPalletEl(pallet));
+      const handle = buildPalletRotateHandleEl(pallet);
+      if (handle) canvas.appendChild(handle);
+    });
   }
 
   function buildStackEl(stack) {
@@ -536,6 +601,7 @@ const Grid = (() => {
         selectedStackId = stack.id;
         selectedGroupId = null;
         selectedTopper = null;
+        selectedPalletId = null;
         multiSelectIds.clear(); multiSelectTopperKeys.clear();
       }
       render();
@@ -594,6 +660,7 @@ const Grid = (() => {
         selectedTopper = { stackId: stack.id, topperId: topper.id };
         selectedStackId = null;
         selectedGroupId = null;
+        selectedPalletId = null;
         multiSelectIds.clear(); multiSelectTopperKeys.clear();
       }
       render();
@@ -658,6 +725,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     selectedTopper = null;
+    selectedPalletId = null;
     if (multiSelectIds.has(stackId)) multiSelectIds.delete(stackId);
     else multiSelectIds.add(stackId);
   }
@@ -670,6 +738,7 @@ const Grid = (() => {
     selectedStackId = null;
     selectedGroupId = null;
     selectedTopper = null;
+    selectedPalletId = null;
     const key = topperKey(stackId, topperId);
     if (multiSelectTopperKeys.has(key)) multiSelectTopperKeys.delete(key);
     else multiSelectTopperKeys.add(key);
@@ -1276,6 +1345,7 @@ const Grid = (() => {
     if (!groupId) return;
     multiSelectIds.clear(); multiSelectTopperKeys.clear();
     selectedGroupId = groupId;
+    selectedPalletId = null;
     render();
   }
 
@@ -1433,6 +1503,175 @@ const Grid = (() => {
     return true;
   }
 
+  // ---- Pallet footprint markers ----
+  // A pallet marker is a pure visual guide (fixed 48"x40", the standard grocery pallet footprint)
+  // -- never part of collision-checking, never blocks or gets blocked by a case/unit. It moves and
+  // rotates freely anywhere on (or off) the floor, same drag/rotate-handle interaction as a group,
+  // just with no overlap or bounds check on commit.
+
+  function findPallet(palletId) {
+    return project.pallets.find(p => p.id === palletId) || null;
+  }
+
+  function handleAddPallet() {
+    pushUndo(snapshotProject());
+    const pallet = {
+      id: uid('pallet'),
+      centerX: project.footprintWidth / 2,
+      centerY: project.footprintDepth / 2,
+      angle: 0,
+      visible: true
+    };
+    project.pallets.push(pallet);
+    selectedPalletId = pallet.id;
+    selectedStackId = null;
+    selectedGroupId = null;
+    selectedTopper = null;
+    multiSelectIds.clear(); multiSelectTopperKeys.clear();
+    saveState(state);
+    render();
+  }
+
+  function handleDuplicatePallet(palletId) {
+    const pallet = findPallet(palletId);
+    if (!pallet) return;
+    pushUndo(snapshotProject());
+    const copy = {
+      id: uid('pallet'),
+      centerX: pallet.centerX + 6,
+      centerY: pallet.centerY + 6,
+      angle: pallet.angle,
+      visible: pallet.visible
+    };
+    project.pallets.push(copy);
+    selectedPalletId = copy.id;
+    saveState(state);
+    render();
+  }
+
+  function handleDeletePallet(palletId) {
+    if (!confirm('Delete this pallet marker?')) return;
+    pushUndo(snapshotProject());
+    project.pallets = project.pallets.filter(p => p.id !== palletId);
+    if (selectedPalletId === palletId) selectedPalletId = null;
+    saveState(state);
+    render();
+  }
+
+  function setPalletVisible(palletId, visible) {
+    const pallet = findPallet(palletId);
+    if (!pallet) return;
+    pushUndo(snapshotProject());
+    pallet.visible = visible;
+    saveState(state);
+    render();
+  }
+
+  // Same shape as moveGroup/setGroupAngle -- a single real, undo-tracked commit, exposed so the 3D
+  // viewer can drive the same persisted data instead of keeping its own parallel copy. No
+  // collision/bounds check (a pallet marker is a guide, not a physical object), so these always
+  // succeed.
+  function movePallet(palletId, centerX, centerY) {
+    const pallet = findPallet(palletId);
+    if (!pallet) return false;
+    const before = snapshotProject();
+    pallet.centerX = centerX;
+    pallet.centerY = centerY;
+    pushUndo(before);
+    saveState(state);
+    render();
+    return true;
+  }
+
+  function setPalletAngle(palletId, angle) {
+    const pallet = findPallet(palletId);
+    if (!pallet) return false;
+    const before = snapshotProject();
+    pallet.angle = ((angle % 360) + 360) % 360;
+    pushUndo(before);
+    saveState(state);
+    render();
+    return true;
+  }
+
+  function buildPalletEl(pallet) {
+    const el = document.createElement('div');
+    el.className = 'grid-pallet' + (pallet.id === selectedPalletId ? ' selected' : '');
+    el.dataset.palletId = pallet.id;
+    positionGroupMemberEl(el, { footprintW: PALLET_W, footprintD: PALLET_D },
+      { x: pallet.centerX, y: pallet.centerY }, pallet.angle);
+
+    el.addEventListener('mousedown', (e) => startPalletMove(e, pallet));
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectedPalletId = pallet.id;
+      selectedStackId = null;
+      selectedGroupId = null;
+      selectedTopper = null;
+      multiSelectIds.clear(); multiSelectTopperKeys.clear();
+      render();
+    });
+
+    return el;
+  }
+
+  function buildPalletRotateHandleEl(pallet) {
+    if (pallet.id !== selectedPalletId) return null;
+    const halfDiag = Math.hypot(PALLET_W, PALLET_D) / 2;
+    const handle = document.createElement('div');
+    handle.className = 'group-rotate-handle';
+    handle.style.left = `${pallet.centerX * scale - 8}px`;
+    handle.style.top = `${(pallet.centerY - halfDiag) * scale - 28}px`;
+    handle.title = 'Drag to rotate the pallet marker';
+    handle.addEventListener('mousedown', (e) => startPalletRotate(e, pallet));
+    return handle;
+  }
+
+  function startPalletMove(e, pallet) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragOp = {
+      type: 'pallet-move',
+      palletId: pallet.id,
+      startMouseX: e.clientX,
+      startMouseY: e.clientY,
+      startCenterX: pallet.centerX,
+      startCenterY: pallet.centerY,
+      beforeSnapshot: snapshotProject(),
+      el: document.getElementById('gridCanvas').querySelector(`.grid-pallet[data-pallet-id="${pallet.id}"]`),
+      handleEl: document.getElementById('gridCanvas').querySelector('.group-rotate-handle')
+    };
+  }
+
+  function startPalletRotate(e, pallet) {
+    e.preventDefault();
+    e.stopPropagation();
+    const canvas = document.getElementById('gridCanvas');
+    const rect = canvas.getBoundingClientRect();
+    dragOp = {
+      type: 'pallet-rotate',
+      palletId: pallet.id,
+      canvasLeft: rect.left,
+      canvasTop: rect.top,
+      startAngle: pallet.angle,
+      beforeSnapshot: snapshotProject(),
+      el: canvas.querySelector(`.grid-pallet[data-pallet-id="${pallet.id}"]`),
+      handleEl: canvas.querySelector('.group-rotate-handle')
+    };
+  }
+
+  function liveRepositionPallet(pallet) {
+    if (dragOp && dragOp.el) {
+      positionGroupMemberEl(dragOp.el, { footprintW: PALLET_W, footprintD: PALLET_D },
+        { x: pallet.centerX, y: pallet.centerY }, pallet.angle);
+    }
+    if (dragOp && dragOp.handleEl) {
+      const halfDiag = Math.hypot(PALLET_W, PALLET_D) / 2;
+      dragOp.handleEl.style.left = `${pallet.centerX * scale - 8}px`;
+      dragOp.handleEl.style.top = `${(pallet.centerY - halfDiag) * scale - 28}px`;
+    }
+  }
+
   // ---- Group rendering ----
 
   function positionGroupMemberEl(el, stack, worldCenter, angle) {
@@ -1473,6 +1712,7 @@ const Grid = (() => {
       e.stopPropagation();
       selectedGroupId = group.id;
       selectedStackId = null;
+      selectedPalletId = null;
       multiSelectIds.clear(); multiSelectTopperKeys.clear();
       render();
     });
@@ -1515,6 +1755,7 @@ const Grid = (() => {
       selectedTopper = { stackId: stack.id, topperId: topper.id };
       selectedStackId = null;
       selectedGroupId = null;
+      selectedPalletId = null;
       multiSelectIds.clear(); multiSelectTopperKeys.clear();
       render();
     });
@@ -1835,6 +2076,28 @@ const Grid = (() => {
       return;
     }
 
+    if (dragOp.type === 'pallet-move') {
+      const pallet = findPallet(dragOp.palletId);
+      if (!pallet) { dragOp = null; return; }
+      const dxPx = e.clientX - dragOp.startMouseX;
+      const dyPx = e.clientY - dragOp.startMouseY;
+      pallet.centerX = dragOp.startCenterX + dxPx / scale;
+      pallet.centerY = dragOp.startCenterY + dyPx / scale;
+      liveRepositionPallet(pallet);
+      return;
+    }
+
+    if (dragOp.type === 'pallet-rotate') {
+      const pallet = findPallet(dragOp.palletId);
+      if (!pallet) { dragOp = null; return; }
+      const cx = dragOp.canvasLeft + pallet.centerX * scale;
+      const cy = dragOp.canvasTop + pallet.centerY * scale;
+      const angleRad = Math.atan2(e.clientY - cy, e.clientX - cx);
+      pallet.angle = ((angleRad * 180) / Math.PI + 360) % 360;
+      liveRepositionPallet(pallet);
+      return;
+    }
+
     const group = project.groups.find(g => g.id === dragOp.groupId);
     if (!group) { dragOp = null; return; }
 
@@ -1880,6 +2143,26 @@ const Grid = (() => {
       return;
     }
 
+    if (dragOp.type === 'pallet-move' || dragOp.type === 'pallet-rotate') {
+      const op = dragOp;
+      dragOp = null;
+      const pallet = findPallet(op.palletId);
+      if (!pallet) return;
+      const moved = op.type === 'pallet-move' &&
+        (Math.abs(pallet.centerX - op.startCenterX) > 0.05 || Math.abs(pallet.centerY - op.startCenterY) > 0.05);
+      const rotated = op.type === 'pallet-rotate' && Math.abs(pallet.angle - op.startAngle) > 0.5;
+      if (!moved && !rotated) {
+        if (op.startCenterX !== undefined) pallet.centerX = op.startCenterX;
+        if (op.startCenterY !== undefined) pallet.centerY = op.startCenterY;
+        if (op.startAngle !== undefined) pallet.angle = op.startAngle;
+        return;
+      }
+      pushUndo(op.beforeSnapshot);
+      saveState(state);
+      render();
+      return;
+    }
+
     const group = project.groups.find(g => g.id === dragOp.groupId);
     const op = dragOp;
     dragOp = null;
@@ -1921,6 +2204,12 @@ const Grid = (() => {
     if (selectedGroupId) {
       renderGroupPanel(panel, selectedGroupId);
       return;
+    }
+
+    if (selectedPalletId) {
+      const pallet = findPallet(selectedPalletId);
+      if (pallet) { renderPalletPanel(panel, pallet); return; }
+      selectedPalletId = null;
     }
 
     if (selectedTopper) {
@@ -2029,6 +2318,74 @@ const Grid = (() => {
     panel.appendChild(detail);
   }
 
+  function renderPalletPanel(panel, pallet) {
+    const detail = document.createElement('div');
+    detail.className = 'selection-detail';
+
+    const sizeRow = document.createElement('div');
+    sizeRow.className = 'sel-row';
+    sizeRow.innerHTML = `<span>Pallet footprint</span><strong>${PALLET_W}"x${PALLET_D}"</strong>`;
+    detail.appendChild(sizeRow);
+
+    const visibleLabel = document.createElement('label');
+    visibleLabel.style.display = 'flex';
+    visibleLabel.style.alignItems = 'center';
+    visibleLabel.style.gap = '6px';
+    visibleLabel.style.fontSize = '0.85rem';
+    visibleLabel.style.color = 'var(--text-dim)';
+    const visibleCheckbox = document.createElement('input');
+    visibleCheckbox.type = 'checkbox';
+    visibleCheckbox.checked = pallet.visible;
+    visibleCheckbox.addEventListener('change', () => setPalletVisible(pallet.id, visibleCheckbox.checked));
+    visibleLabel.appendChild(visibleCheckbox);
+    visibleLabel.appendChild(document.createTextNode('Visible'));
+    detail.appendChild(visibleLabel);
+
+    const angleLabel = document.createElement('label');
+    angleLabel.textContent = 'Orientation (degrees)';
+    angleLabel.style.display = 'flex';
+    angleLabel.style.flexDirection = 'column';
+    angleLabel.style.gap = '4px';
+    angleLabel.style.fontSize = '0.85rem';
+    angleLabel.style.color = 'var(--text-dim)';
+
+    const angleInput = document.createElement('input');
+    angleInput.type = 'number';
+    angleInput.step = '1';
+    angleInput.value = Math.round(pallet.angle);
+    angleInput.addEventListener('change', () => {
+      setPalletAngle(pallet.id, parseFloat(angleInput.value) || 0);
+    });
+    angleLabel.appendChild(angleInput);
+    detail.appendChild(angleLabel);
+
+    const hint = document.createElement('p');
+    hint.className = 'empty-state';
+    hint.textContent = 'Drag the outline to move it. Drag the small handle above it to rotate freely.';
+    detail.appendChild(hint);
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'form-actions';
+
+    const dupBtn = document.createElement('button');
+    dupBtn.type = 'button';
+    dupBtn.className = 'btn-secondary';
+    dupBtn.textContent = 'Duplicate';
+    dupBtn.addEventListener('click', () => handleDuplicatePallet(pallet.id));
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'btn-danger';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', () => handleDeletePallet(pallet.id));
+
+    btnRow.appendChild(dupBtn);
+    btnRow.appendChild(deleteBtn);
+    detail.appendChild(btnRow);
+
+    panel.appendChild(detail);
+  }
+
   function renderStackPanel(panel, stack) {
     const detail = document.createElement('div');
     detail.className = 'selection-detail';
@@ -2127,6 +2484,7 @@ const Grid = (() => {
         row.addEventListener('click', () => {
           selectedTopper = { stackId: stack.id, topperId: topper.id };
           selectedStackId = null;
+          selectedPalletId = null;
           render();
         });
         toppersList.appendChild(row);
@@ -2411,6 +2769,7 @@ const Grid = (() => {
       selectedStackId = null;
       selectedGroupId = null;
       selectedTopper = null;
+      selectedPalletId = null;
       multiSelectIds.clear(); multiSelectTopperKeys.clear();
       clearHistory();
     }
@@ -2424,6 +2783,7 @@ const Grid = (() => {
 
   return {
     init, refresh, getActiveProject, getGroupMembers, resolveSwatch, computeTally,
-    groupStacks: groupStackIds, setGroupAngle, moveGroup
+    groupStacks: groupStackIds, setGroupAngle, moveGroup,
+    PALLET_W, PALLET_D, movePallet, setPalletAngle, handleDuplicatePallet, handleDeletePallet
   };
 })();

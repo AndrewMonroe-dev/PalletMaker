@@ -483,6 +483,18 @@ select {
   background: var(--panel-alt); border-radius: 4px; padding: 4px 6px; font-size: 0.78rem;
 }
 
+.grid-pallet {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid rgba(255,255,255,0.85);
+  background: rgba(255,255,255,0.06);
+  border-radius: 1px;
+  cursor: grab;
+  z-index: 0; /* sits below stacks/toppers so overlapping cases stay reachable to click/drag */
+}
+.grid-pallet:active { cursor: grabbing; }
+.grid-pallet.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
 .group-rotate-handle {
   position: absolute;
   width: 16px;

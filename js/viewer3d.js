@@ -48,6 +48,12 @@ const Viewer3D = (() => {
   let stackHighlights = [];           // wireframe outlines around the current selection
   let groupRotateHandle3D = null;     // sphere shown above a selected group's center
 
+  // ---- Pallet footprint marker state (move/rotate directly in the 3D view) ----
+  let palletHitMeshMap = {};      // pallet id -> invisible flat hit-test plane, rebuilt every buildScene()
+  let palletVisualMap = {};       // pallet id -> { fill, outline } meshes, kept in sync with the hit plane
+  let selectedPalletId3D = null;  // ephemeral, mirrors Grid's selectedPalletId but local to this view
+  let palletRotateHandle3D = null;
+
   function init(appState) {
     state = appState;
     document.getElementById('viewer3dAddImage').addEventListener('change', handleAddImage);
@@ -116,6 +122,17 @@ const Viewer3D = (() => {
         return;
       }
 
+      if (palletRotateHandle3D && raycastObjects(e, [palletRotateHandle3D])) {
+        startPalletRotateDrag3D(e);
+        return;
+      }
+
+      const palletHit = raycastObjects(e, Object.values(palletHitMeshMap));
+      if (palletHit) {
+        startPalletMoveDrag3D(e, palletHit.object.userData.palletId);
+        return;
+      }
+
       const stackHit = raycastObjects(e, Object.values(stackMeshMap));
       if (stackHit) {
         startStackInteractionDrag3D(e, stackHit.object.userData.stackId);
@@ -134,6 +151,8 @@ const Viewer3D = (() => {
       else if (dragOp3d.type === 'rotate') doRotateDrag(e);
       else if (dragOp3d.type === 'group-rotate') doGroupRotateDrag3D(e);
       else if (dragOp3d.type === 'group-move') doGroupMoveDrag3D(e);
+      else if (dragOp3d.type === 'pallet-move') doPalletMoveDrag3D(e);
+      else if (dragOp3d.type === 'pallet-rotate') doPalletRotateDrag3D(e);
     });
 
     window.addEventListener('mouseup', () => {
@@ -154,6 +173,12 @@ const Viewer3D = (() => {
             renderSelectionPanel3D();
             changed = true;
           }
+          if (selectedPalletId3D) {
+            selectedPalletId3D = null;
+            removePalletRotateHandle3D();
+            renderSelectionPanel3D();
+            changed = true;
+          }
           if (changed) markDirty();
         }
         return;
@@ -164,6 +189,14 @@ const Viewer3D = (() => {
       }
       if (op.type === 'group-move') {
         finishGroupMoveDrag3D(op);
+        return;
+      }
+      if (op.type === 'pallet-move') {
+        finishPalletMoveDrag3D(op);
+        return;
+      }
+      if (op.type === 'pallet-rotate') {
+        finishPalletRotateDrag3D(op);
         return;
       }
       if (op.moved) {
@@ -739,6 +772,155 @@ const Viewer3D = (() => {
     refresh();
   }
 
+  // ---- Pallet footprint marker interaction (mirrors the group move/rotate pattern above, but
+  // simpler -- a pallet marker is a single flat object with no members and no collision check). ----
+
+  function findPallet3D(palletId) {
+    return (project.pallets || []).find(p => p.id === palletId) || null;
+  }
+
+  function palletMeshRotationY(pallet) {
+    return -(pallet.angle * Math.PI) / 180;
+  }
+
+  function palletWorldCenter(pallet) {
+    return new THREE.Vector3(toSceneX(pallet.centerX), 0.03, toSceneZ(pallet.centerY));
+  }
+
+  function startPalletMoveDrag3D(e, palletId) {
+    const pallet = findPallet3D(palletId);
+    if (!pallet) return;
+    if (selectedPalletId3D !== palletId) {
+      selectedPalletId3D = palletId;
+      rebuildPalletSelectionVisuals3D();
+    }
+    const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    dragOp3d = {
+      type: 'pallet-move',
+      palletId,
+      plane: floorPlane,
+      startWorldPoint: raycastPlane(e, floorPlane),
+      startCenterX: pallet.centerX,
+      startCenterY: pallet.centerY,
+      previewCenterX: pallet.centerX,
+      previewCenterY: pallet.centerY,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      moved: false
+    };
+  }
+
+  function doPalletMoveDrag3D(e) {
+    const pallet = findPallet3D(dragOp3d.palletId);
+    const point = raycastPlane(e, dragOp3d.plane);
+    if (!pallet || !point || !dragOp3d.startWorldPoint) return;
+
+    if (Math.abs(e.clientX - dragOp3d.startClientX) > 3 || Math.abs(e.clientY - dragOp3d.startClientY) > 3) {
+      dragOp3d.moved = true;
+    }
+
+    const deltaX = point.x - dragOp3d.startWorldPoint.x;
+    const deltaZ = point.z - dragOp3d.startWorldPoint.z;
+    dragOp3d.previewCenterX = dragOp3d.startCenterX + deltaX;
+    dragOp3d.previewCenterY = dragOp3d.startCenterY + deltaZ;
+
+    liveUpdatePalletTransform(pallet.id, dragOp3d.previewCenterX, dragOp3d.previewCenterY, pallet.angle);
+  }
+
+  function finishPalletMoveDrag3D(op) {
+    if (!op.moved) return;
+    Grid.movePallet(op.palletId, op.previewCenterX, op.previewCenterY);
+    refresh();
+  }
+
+  function startPalletRotateDrag3D(e) {
+    if (!selectedPalletId3D) return;
+    const pallet = findPallet3D(selectedPalletId3D);
+    if (!pallet) return;
+    dragOp3d = {
+      type: 'pallet-rotate',
+      palletId: pallet.id,
+      plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
+      previewAngle: pallet.angle,
+      moved: false,
+      startClientX: e.clientX,
+      startClientY: e.clientY
+    };
+  }
+
+  function doPalletRotateDrag3D(e) {
+    const pallet = findPallet3D(dragOp3d.palletId);
+    const point = raycastPlane(e, dragOp3d.plane);
+    if (!pallet || !point) return;
+
+    const centerX = toSceneX(pallet.centerX);
+    const centerZ = toSceneZ(pallet.centerY);
+    const dx = point.x - centerX;
+    const dz = point.z - centerZ;
+    if (Math.hypot(dx, dz) < 0.01) return;
+
+    const angle = -((Math.atan2(dx, dz) * 180) / Math.PI);
+    if (Math.abs(e.clientX - dragOp3d.startClientX) > 3 || Math.abs(e.clientY - dragOp3d.startClientY) > 3) {
+      dragOp3d.moved = true;
+    }
+    dragOp3d.previewAngle = angle;
+
+    liveUpdatePalletTransform(pallet.id, pallet.centerX, pallet.centerY, angle);
+  }
+
+  function finishPalletRotateDrag3D(op) {
+    if (!op.moved) return;
+    Grid.setPalletAngle(op.palletId, op.previewAngle);
+    refresh();
+  }
+
+  // Repositions/rotates the pallet's live meshes (and its handle, if selected) without touching
+  // persisted data -- same "preview during drag, one real commit on mouseup" pattern as groups.
+  // The fill/outline/hit geometries all have the "lie flat on the floor" tilt baked into the
+  // geometry itself (see buildPalletVisuals3D), so mesh.rotation.y is free to be the marker's own
+  // spin around the vertical axis -- same convention as an image panel's rotationY.
+  function liveUpdatePalletTransform(palletId, centerX, centerY, angleDeg) {
+    const visuals = palletVisualMap[palletId];
+    const rotY = -(angleDeg * Math.PI) / 180;
+    const pos = new THREE.Vector3(toSceneX(centerX), 0.03, toSceneZ(centerY));
+    if (visuals) {
+      [visuals.fill, visuals.outline].forEach(mesh => {
+        mesh.position.copy(pos);
+        mesh.rotation.y = rotY;
+      });
+    }
+    const hitMesh = palletHitMeshMap[palletId];
+    if (hitMesh) { hitMesh.position.copy(pos); hitMesh.rotation.y = rotY; }
+    if (palletId === selectedPalletId3D && palletRotateHandle3D) {
+      palletRotateHandle3D.position.set(pos.x, 3, pos.z);
+    }
+  }
+
+  function removePalletRotateHandle3D() {
+    if (palletRotateHandle3D) { scene.remove(palletRotateHandle3D); palletRotateHandle3D = null; }
+  }
+
+  function rebuildPalletSelectionVisuals3D() {
+    removePalletRotateHandle3D();
+    if (selectedPalletId3D) {
+      const pallet = findPallet3D(selectedPalletId3D);
+      if (!pallet) {
+        selectedPalletId3D = null;
+      } else {
+        const mesh = new THREE.Mesh(
+          new THREE.SphereGeometry(1.2, 12, 12),
+          new THREE.MeshBasicMaterial({ color: 0x22c55e })
+        );
+        const center = palletWorldCenter(pallet);
+        mesh.position.set(center.x, 3, center.z);
+        scene.add(mesh);
+        palletRotateHandle3D = mesh;
+      }
+    }
+    renderSelectionPanel3D();
+    markDirty();
+  }
+
   function handleGroupSelectedClick3D() {
     if (selectedStackIds3D.size < 2) return;
     const groupId = Grid.groupStacks(Array.from(selectedStackIds3D));
@@ -767,6 +949,39 @@ const Viewer3D = (() => {
         const ok = Grid.setGroupAngle(group.id, parseFloat(e.target.value) || 0);
         if (!ok) alert('That rotation would overlap something else or leave the floor. Reverted.');
         saveState(state);
+        refresh();
+      });
+      return;
+    }
+
+    if (selectedPalletId3D) {
+      const pallet = findPallet3D(selectedPalletId3D);
+      if (!pallet) { panel.innerHTML = '<p class="empty-state">Click a case in the 3D view to select it.</p>'; return; }
+      panel.innerHTML = `
+        <div class="sel-row"><span>Pallet footprint</span><strong>${Grid.PALLET_W}"x${Grid.PALLET_D}"</strong></div>
+        <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85rem;color:var(--text-dim);">
+          Orientation (degrees)
+          <input type="number" id="viewer3dPalletAngle" step="1" value="${Math.round(pallet.angle)}">
+        </label>
+        <p class="empty-state">Drag the marker to move it. Drag the green handle above it to rotate freely.</p>
+        <div class="form-actions">
+          <button type="button" id="viewer3dDuplicatePalletBtn" class="btn-secondary">Duplicate</button>
+          <button type="button" id="viewer3dDeletePalletBtn" class="btn-danger">Delete</button>
+        </div>
+      `;
+      document.getElementById('viewer3dPalletAngle').addEventListener('change', (e) => {
+        Grid.setPalletAngle(pallet.id, parseFloat(e.target.value) || 0);
+        refresh();
+      });
+      document.getElementById('viewer3dDuplicatePalletBtn').addEventListener('click', () => {
+        Grid.handleDuplicatePallet(pallet.id);
+        refresh();
+      });
+      document.getElementById('viewer3dDeletePalletBtn').addEventListener('click', () => {
+        // If the confirm() inside this is cancelled, project.pallets is unchanged and
+        // addPalletsToScene()'s own stale-selection check (on refresh) leaves selectedPalletId3D
+        // alone -- no need to special-case the cancel path here.
+        Grid.handleDeletePallet(pallet.id);
         refresh();
       });
       return;
@@ -896,6 +1111,7 @@ const Viewer3D = (() => {
 
     addStacksToScene();
     addImagePanelsToScene();
+    addPalletsToScene();
 
     // Selection is ephemeral view state that survives a scene rebuild, but the group/stacks it
     // points at might not (e.g. the group was deleted from the 2D grid) -- validate before
@@ -1082,6 +1298,58 @@ const Viewer3D = (() => {
 
     if (selectedPanelId && !panelMeshMap[selectedPanelId]) selectedPanelId = null;
     rebuildSelectionVisuals();
+  }
+
+  // Pallet footprint markers: a flat, mostly-transparent white square lying on the floor. The
+  // "lie flat" tilt is baked into each geometry (geo.rotateX) rather than applied via mesh.rotation
+  // -- see liveUpdatePalletTransform's comment -- so mesh.rotation.y alone can drive the marker's
+  // own orientation the same way an image panel's rotationY does.
+  function addPalletsToScene() {
+    palletHitMeshMap = {};
+    palletVisualMap = {};
+
+    (project.pallets || []).filter(p => p.visible).forEach(pallet => {
+      const w = Grid.PALLET_W, d = Grid.PALLET_D;
+      const rotY = palletMeshRotationY(pallet);
+      const center = palletWorldCenter(pallet);
+
+      const fillGeo = new THREE.PlaneGeometry(w, d);
+      fillGeo.rotateX(-Math.PI / 2);
+      const fillMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.08,
+        side: THREE.DoubleSide, depthWrite: false
+      });
+      const fill = new THREE.Mesh(fillGeo, fillMat);
+      fill.position.copy(center);
+      fill.rotation.y = rotY;
+      fill.userData.palletId = pallet.id;
+      scene.add(fill);
+
+      const outlineGeo = new THREE.EdgesGeometry(new THREE.PlaneGeometry(w, d));
+      outlineGeo.rotateX(-Math.PI / 2);
+      const outline = new THREE.LineSegments(outlineGeo, new THREE.LineBasicMaterial({ color: 0xffffff }));
+      outline.position.copy(center);
+      outline.rotation.y = rotY;
+      scene.add(outline);
+
+      // A separate, slightly larger invisible plane for raycasting -- the thin LineSegments
+      // outline above is unreliable to click precisely, so hit-testing goes through this instead
+      // (also used by the fill mesh's own userData.palletId as a fallback, but this is what's
+      // actually passed to raycastObjects).
+      const hitGeo = new THREE.PlaneGeometry(w, d);
+      hitGeo.rotateX(-Math.PI / 2);
+      const hitMesh = new THREE.Mesh(hitGeo, new THREE.MeshBasicMaterial({ visible: false }));
+      hitMesh.position.copy(center);
+      hitMesh.rotation.y = rotY;
+      hitMesh.userData.palletId = pallet.id;
+      scene.add(hitMesh);
+
+      palletVisualMap[pallet.id] = { fill, outline };
+      palletHitMeshMap[pallet.id] = hitMesh;
+    });
+
+    if (selectedPalletId3D && !palletHitMeshMap[selectedPalletId3D]) selectedPalletId3D = null;
+    rebuildPalletSelectionVisuals3D();
   }
 
   // Fixed pivot height (unrelated to cursor-centered zoom, which only ever shifts the XZ position).
