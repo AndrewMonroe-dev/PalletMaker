@@ -1369,6 +1369,28 @@ const Viewer3D = (() => {
     });
   }
 
+  // Bakes the inches-to-meters conversion into an object's OWN local position/scale, rather than
+  // scaling the parent scene once and letting the exporters inherit it -- confirmed live (by
+  // unzipping an exported .usdz, which is just a zip archive holding a plain-text model.usda, and
+  // reading the raw point coordinates) that USDZExporter ignores a parent Object3D's transform
+  // entirely and only ever bakes each individual mesh's own local matrix. A scene-level scale was
+  // silently dropped, so the exported model was placed in AR at its raw inch dimensions
+  // mis-declared as meters -- a ~39x-too-large floor that reads as "just an endless flat plane"
+  // once you're standing on it, exactly what this shipped as before being caught here.
+  function scaleForAr(object) {
+    object.position.multiplyScalar(IN_TO_M);
+    object.scale.multiplyScalar(IN_TO_M);
+    // Mutating position/scale alone doesn't recompute .matrix or .matrixWorld -- those normally
+    // only get (re)computed during a renderer.render() traversal, which this orphan export scene
+    // never gets. USDZExporter specifically reads object.matrixWorld (confirmed against its own
+    // source), so without forcing this recompute the change above silently has zero effect on the
+    // exported file -- exactly what happened here: verified live by unzipping the exported .usdz
+    // (it's a plain zip archive around a text model.usda) and finding its point/transform data
+    // still in raw, un-converted inches even after this function ran.
+    object.updateMatrixWorld(true);
+    return object;
+  }
+
   function buildArExportScene() {
     if (!project) return null;
     const exportScene = new THREE.Scene();
@@ -1377,7 +1399,7 @@ const Viewer3D = (() => {
     const floorMat = new THREE.MeshStandardMaterial({ color: 0x1d2026, side: THREE.DoubleSide });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
-    exportScene.add(floor);
+    exportScene.add(scaleForAr(floor));
 
     // Item boxes use a 6-entry material array live (buildBoxMesh) so only the front face shows
     // the case photo -- confirmed live that USDZExporter at this three.js version can't handle a
@@ -1389,7 +1411,7 @@ const Viewer3D = (() => {
       const clone = box.clone();
       const mat = Array.isArray(clone.material) ? (clone.material[4] || clone.material[0]) : clone.material;
       clone.material = toArExportMaterial(mat);
-      exportScene.add(clone);
+      exportScene.add(scaleForAr(clone));
     });
     // Image panels use a plain MeshBasicMaterial live -- also confirmed live to crash the same
     // USDZExporter traverse (see toArExportMaterial above for why), independently of the box
@@ -1397,10 +1419,9 @@ const Viewer3D = (() => {
     Object.values(panelMeshMap).forEach(panel => {
       const clone = panel.clone();
       clone.material = toArExportMaterial(clone.material);
-      exportScene.add(clone);
+      exportScene.add(scaleForAr(clone));
     });
 
-    exportScene.scale.setScalar(IN_TO_M);
     return exportScene;
   }
 
