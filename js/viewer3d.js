@@ -1394,7 +1394,13 @@ const Viewer3D = (() => {
     const mat = new THREE_AR.MeshStandardMaterial({ color: sw ? sw.color : 0x888888 });
     if (sw && sw.image) {
       const tex = await loadArTexture(sw.image);
-      if (tex) mat.map = tex;
+      // MeshStandardMaterial's color is a MULTIPLICATIVE tint over the map, not just a fallback
+      // for when there's no texture -- leaving it at the swatch's own base color (a saturated
+      // default red for a never-recolored swatch) tinted every photo red once a map was added.
+      // The live buildBoxMesh avoids this by never setting a color at all when there's a map
+      // (defaults to white); reset explicitly here since this material was already constructed
+      // with the swatch color above, for the no-photo fallback case.
+      if (tex) { mat.map = tex; mat.color.set(0xffffff); }
     }
     const mesh = new THREE_AR.Mesh(new THREE_AR.BoxGeometry(width, height, depth), mat);
     return mesh;
