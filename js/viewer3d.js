@@ -165,7 +165,12 @@ const Viewer3D = (() => {
       else if (kind === 'depth') startDepthDrag(e);
       else if (kind === 'group-rotate') startGroupRotateDrag3D(e);
       else if (kind === 'pallet-rotate') startPalletRotateDrag3D(e);
-      else if (kind === 'panel') startMoveDrag(e, hit.object.userData.panelId);
+      else if (kind === 'panel') {
+        // Shift+drag the image itself moves depth only -- no small handle to hunt for. Plain drag
+        // keeps doing x/height exactly as before.
+        if (e.shiftKey) startDepthDrag(e, hit.object.userData.panelId);
+        else startMoveDrag(e, hit.object.userData.panelId);
+      }
       else if (kind === 'pallet') startPalletMoveDrag3D(e, hit.object.userData.palletId);
       else if (kind === 'stack') startStackInteractionDrag3D(e, hit.object.userData.stackId);
     });
@@ -402,16 +407,21 @@ const Viewer3D = (() => {
     liveResizePanelMesh(panel);
   }
 
-  // ---- Depth drag: the cyan handle. Body-dragging a panel raycasts against the panel's OWN
-  // plane (a plane of constant depth), so it can only ever change x/height -- depth can never
-  // move that way no matter how you drag, which is exactly the "clunky" complaint this handle
-  // fixes. This raycasts against a horizontal floor-parallel plane instead (same convention
-  // stacks already use), and only ever applies the resulting Z component -- x is deliberately
-  // left alone so this handle does one thing (depth) without fighting the body-drag's x control. ----
+  // ---- Depth drag: Shift+drag the panel itself (or drag the cyan handle when selected). Plain
+  // body-dragging a panel raycasts against the panel's OWN plane (a plane of constant depth), so
+  // it can only ever change x/height -- depth can never move that way no matter how you drag. This
+  // raycasts against a horizontal floor-parallel plane instead (same convention stacks already
+  // use), and only ever applies the resulting Z component -- x is deliberately left alone so this
+  // does one thing (depth) without fighting the plain drag's x control. ----
 
-  function startDepthDrag(e) {
-    const panel = findPanel(selectedPanelId);
+  function startDepthDrag(e, panelId) {
+    const targetId = panelId || selectedPanelId;
+    const panel = findPanel(targetId);
     if (!panel) return;
+    if (selectedPanelId !== targetId) {
+      selectedPanelId = targetId;
+      rebuildSelectionVisuals();
+    }
     const center = panelWorldCenter(panel);
     const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -center.y);
     dragOp3d = {
