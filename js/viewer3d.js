@@ -731,8 +731,7 @@ const Viewer3D = (() => {
         const cos = Math.cos(a), sin = Math.sin(a);
         box.position.x = toSceneX(worldCenter.x + off.x * cos - off.y * sin);
         box.position.z = toSceneZ(worldCenter.y + off.x * sin + off.y * cos);
-        const faceAngle = box.userData.isTopper ? angle : stackFacingAngle(stack || {}, angle);
-        box.rotation.y = -(faceAngle * Math.PI) / 180;
+        box.rotation.y = -(stackFacingAngle(stack || {}, angle) * Math.PI) / 180;
       });
     });
 
@@ -1327,11 +1326,11 @@ const Viewer3D = (() => {
   }
 
   // positionAngle is the angle everything is LAID OUT at (0 for a loose stack, the group's angle
-  // for a grouped one) -- it drives where toppers sit relative to the base. The base's own boxes
-  // additionally turn by the stack's facing flip (see stackFacingAngle). Passing the flip in as
-  // the layout angle, as this used to, spun the toppers 180 degrees around the case center too,
-  // so units on top of a reversed case showed up on the opposite side from where the 2D grid
-  // (which never rotates toppers for a flip) had them.
+  // for a grouped one) -- it drives where toppers sit relative to the base. Every box (base and
+  // toppers alike) additionally turns in place by the stack's facing flip (see stackFacingAngle).
+  // Passing the flip in as the layout angle, as this used to, spun the toppers 180 degrees AROUND
+  // the case center, so units on top of a reversed case showed up on the opposite side from where
+  // the 2D grid (which never moves toppers for a flip) had them.
   function addStackMeshes(stack, centerGridX, centerGridY, positionAngle) {
     const faceAngle = stackFacingAngle(stack, positionAngle);
     const baseHeight = addItemColumn(stack.id, stack.items, centerGridX, centerGridY, faceAngle, 0, stack.footprintW, stack.footprintD, { x: 0, y: 0 }, false);
@@ -1347,7 +1346,10 @@ const Viewer3D = (() => {
       const cos = Math.cos(a), sin = Math.sin(a);
       const topperCenterX = centerGridX + offsetX * cos - offsetY * sin;
       const topperCenterY = centerGridY + offsetX * sin + offsetY * cos;
-      addItemColumn(stack.id, topper.items, topperCenterX, topperCenterY, positionAngle, baseHeight, topper.footprintW, topper.footprintD, { x: offsetX, y: offsetY }, true);
+      // Toppers keep their 2D spot on the case (laid out by positionAngle) but each one turns in
+      // place with the case's facing, so a reversed case's units show their photo front the same
+      // way the case does.
+      addItemColumn(stack.id, topper.items, topperCenterX, topperCenterY, faceAngle, baseHeight, topper.footprintW, topper.footprintD, { x: offsetX, y: offsetY }, true);
     });
   }
 
@@ -1890,7 +1892,7 @@ const Viewer3D = (() => {
       const cos = Math.cos(a), sin = Math.sin(a);
       const topperCenterX = centerGridX + offsetX * cos - offsetY * sin;
       const topperCenterY = centerGridY + offsetX * sin + offsetY * cos;
-      await buildArItemColumn(exportScene, topper.items, topperCenterX, topperCenterY, positionAngle, baseHeight, topper.footprintW, topper.footprintD);
+      await buildArItemColumn(exportScene, topper.items, topperCenterX, topperCenterY, faceAngle, baseHeight, topper.footprintW, topper.footprintD);
     }
   }
 
