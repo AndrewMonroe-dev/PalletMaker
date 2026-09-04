@@ -586,6 +586,8 @@ const Grid = (() => {
       // matching its z-index -- see buildStackGrabHandleEl's comment.
       const grabHandle = buildStackGrabHandleEl(stack);
       if (grabHandle) canvas.appendChild(grabHandle);
+      const rotateHandle = buildStackRotateHandleEl(stack);
+      if (rotateHandle) canvas.appendChild(rotateHandle);
     });
 
     project.groups.forEach(group => {
@@ -610,6 +612,10 @@ const Grid = (() => {
     el.style.top = `${stack.y * scale}px`;
     el.style.width = `${stack.footprintW * scale}px`;
     el.style.height = `${stack.footprintD * scale}px`;
+    if (stack.angle) {
+      el.style.transform = `rotate(${stack.angle}deg)`;
+      el.style.transformOrigin = 'center';
+    }
 
     applySwatchBackground(el, stack.items[stack.items.length - 1]);
 
@@ -704,10 +710,26 @@ const Grid = (() => {
       + (isMultiSelected ? ' multi-selected' : '');
     el.dataset.parentStackId = stack.id;
     el.dataset.topperId = topper.id;
-    el.style.left = `${(stack.x + topper.dx) * scale}px`;
-    el.style.top = `${(stack.y + topper.dy) * scale}px`;
-    el.style.width = `${topper.footprintW * scale}px`;
-    el.style.height = `${topper.footprintD * scale}px`;
+    if (stack.angle) {
+      // Same rigid rotate-around-parent-center formula buildGroupTopperEl already uses for a
+      // topper riding a rotated group member -- a standalone stack can now carry its own free
+      // angle too, so its toppers need the identical treatment to stay visually attached.
+      const stackCenter = { x: stack.x + stack.footprintW / 2, y: stack.y + stack.footprintD / 2 };
+      const offsetX = topper.dx + topper.footprintW / 2 - stack.footprintW / 2;
+      const offsetY = topper.dy + topper.footprintD / 2 - stack.footprintD / 2;
+      const a = (stack.angle * Math.PI) / 180;
+      const cos = Math.cos(a), sin = Math.sin(a);
+      const worldCenter = {
+        x: stackCenter.x + offsetX * cos - offsetY * sin,
+        y: stackCenter.y + offsetX * sin + offsetY * cos
+      };
+      positionGroupMemberEl(el, { footprintW: topper.footprintW, footprintD: topper.footprintD }, worldCenter, stack.angle);
+    } else {
+      el.style.left = `${(stack.x + topper.dx) * scale}px`;
+      el.style.top = `${(stack.y + topper.dy) * scale}px`;
+      el.style.width = `${topper.footprintW * scale}px`;
+      el.style.height = `${topper.footprintD * scale}px`;
+    }
 
     applySwatchBackground(el, topper.items[topper.items.length - 1]);
 
@@ -908,7 +930,8 @@ const Grid = (() => {
       footprintW, footprintD,
       items: [newItem],
       toppers: [],
-      groupId: null
+      groupId: null,
+      angle: 0
     });
     saveState(state);
     renderAfterDrop();
@@ -1210,6 +1233,12 @@ const Grid = (() => {
     const excludeGroupId = (opts && typeof opts === 'object' && opts.excludeGroupId) || null;
     const list = [];
     project.stacks.filter(s => !s.groupId && s.id !== excludeStackId).forEach(s => {
+      // Same rule as a rotated group just below: only a stack sitting at (near enough) 0 degrees
+      // has a well-defined "flush" edge to offer another item -- a freely rotated single stack's
+      // own w/d no longer describe its actual screen-space footprint, so it's excluded here (it
+      // still collides correctly everywhere else via allOccupiedCorners' real rotated corners).
+      const angleNorm = ((s.angle || 0) % 360 + 360) % 360;
+      if (angleNorm > 0.5 && angleNorm < 359.5) return;
       list.push({ x: s.x, y: s.y, w: s.footprintW, d: s.footprintD });
     });
     project.groups.filter(g => g.id !== excludeGroupId).forEach(g => {
@@ -1395,7 +1424,10 @@ const Grid = (() => {
     const list = [];
 
     project.stacks.filter(s => !s.groupId && s.id !== excludeStackId).forEach(s => {
-      list.push(aabbCorners(s.x, s.y, s.footprintW, s.footprintD));
+      list.push(rotatedCorners(
+        s.x + s.footprintW / 2, s.y + s.footprintD / 2,
+        s.footprintW / 2, s.footprintD / 2, s.angle || 0
+      ));
     });
 
     project.groups.filter(g => g.id !== excludeGroupId).forEach(g => {
@@ -1409,6 +1441,42 @@ const Grid = (() => {
 
   function collidesWithAnything(corners, opts) {
     return allOccupiedCorners(opts).some(other => obbOverlap(corners, other));
+  }
+
+  // ---- Single-stack rotation ----
+  // A group has always been freely rotatable (rotate handle + angle field); a single ungrouped
+  // stack/unit had no such thing until now. Mirrors the group version but for one stack's own
+  // rotatedCorners instead of a whole member set -- reverts to the real pre-attempt angle
+  // (passed in explicitly) on failure, not whatever the caller already mutated the stack to, so
+  // a rejected drag-rotate or typed angle always lands back exactly where it started.
+  function trySetStackAngle(stack, prevAngle, angle) {
+    stack.angle = angle;
+    const corners = rotatedCorners(
+      stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2,
+      stack.footprintW / 2, stack.footprintD / 2, angle
+    );
+    const outOfBounds = corners.some(c =>
+      c.x < 0 || c.y < 0 || c.x > project.footprintWidth || c.y > project.footprintDepth
+    );
+    const collides = collidesWithAnything(corners, { excludeStackId: stack.id });
+    if (outOfBounds || collides) {
+      stack.angle = prevAngle;
+      return false;
+    }
+    saveState(state);
+    render();
+    return true;
+  }
+
+  function setStackAngle(stackId, angle) {
+    const stack = project.stacks.find(s => s.id === stackId && !s.groupId);
+    if (!stack) return false;
+    const normalized = ((angle % 360) + 360) % 360;
+    const prevAngle = stack.angle || 0;
+    const before = snapshotProject();
+    const ok = trySetStackAngle(stack, prevAngle, normalized);
+    if (ok) pushUndo(before);
+    return ok;
   }
 
   // ---- Grouping ----
@@ -1448,7 +1516,8 @@ const Grid = (() => {
         footprintD: topper.footprintD,
         items: topper.items,
         toppers: [],
-        groupId: null
+        groupId: null,
+        angle: 0
       };
       project.stacks.push(newStack);
       ids.push(newStack.id);
@@ -1489,7 +1558,12 @@ const Grid = (() => {
       members
     };
 
-    memberStacks.forEach(s => { s.groupId = group.id; });
+    // A member's own free rotation (if it had one as a standalone stack) has no meaning once
+    // grouped -- rendering/collision for a member always goes through the group's own angle
+    // instead (see getGroupMembers/buildGroupMemberEl), so this keeps the data consistent with
+    // what's already visually true rather than leaving a dormant value that would resurface
+    // unexpectedly if the stack is ever ungrouped later.
+    memberStacks.forEach(s => { s.groupId = group.id; s.angle = 0; });
     project.groups.push(group);
 
     saveState(state);
@@ -1514,6 +1588,7 @@ const Grid = (() => {
       stack.x = snap(worldCenter.x - stack.footprintW / 2);
       stack.y = snap(worldCenter.y - stack.footprintD / 2);
       stack.groupId = null;
+      stack.angle = 0;
       multiSelectIds.add(stack.id);
     });
 
@@ -1917,6 +1992,60 @@ const Grid = (() => {
     return handle;
   }
 
+  // Same handle, same visual, as a group's -- just anchored to one stack's own (possibly already
+  // rotated) bounding box instead of a whole group's. Only ungrouped stacks get one; a grouped
+  // stack rotates via its group's handle instead.
+  function buildStackRotateHandleEl(stack) {
+    if (stack.id !== selectedStackId) return null;
+    const centerX = stack.x + stack.footprintW / 2;
+    const centerY = stack.y + stack.footprintD / 2;
+    const corners = rotatedCorners(centerX, centerY, stack.footprintW / 2, stack.footprintD / 2, stack.angle || 0);
+    const minY = Math.min(...corners.map(c => c.y));
+
+    const handle = document.createElement('div');
+    handle.className = 'group-rotate-handle';
+    handle.style.left = `${centerX * scale - 8}px`;
+    handle.style.top = `${minY * scale - 28}px`;
+    handle.title = 'Drag to rotate';
+    handle.addEventListener('mousedown', (e) => startStackRotate(e, stack));
+    return handle;
+  }
+
+  function startStackRotate(e, stack) {
+    e.preventDefault();
+    e.stopPropagation();
+    const canvas = document.getElementById('gridCanvas');
+    const rect = canvas.getBoundingClientRect();
+    dragOp = {
+      type: 'stack-rotate',
+      stackId: stack.id,
+      canvasLeft: rect.left,
+      canvasTop: rect.top,
+      startAngle: stack.angle || 0,
+      beforeSnapshot: snapshotProject(),
+      el: canvas.querySelector(`.grid-stack[data-stack-id="${stack.id}"]:not(.grid-topper)`),
+      handleEl: canvas.querySelector('.group-rotate-handle')
+    };
+  }
+
+  // Live visual update during a stack-rotate drag -- mirrors liveRepositionGroup's role but for
+  // one stack: just its own element's transform and the handle's position, no full re-render
+  // (and no collision check -- that's only done once, on commit, same as a group rotate).
+  function liveRotateStack(stack) {
+    if (dragOp && dragOp.el) {
+      dragOp.el.style.transform = `rotate(${stack.angle}deg)`;
+      dragOp.el.style.transformOrigin = 'center';
+    }
+    if (dragOp && dragOp.handleEl) {
+      const centerX = stack.x + stack.footprintW / 2;
+      const centerY = stack.y + stack.footprintD / 2;
+      const corners = rotatedCorners(centerX, centerY, stack.footprintW / 2, stack.footprintD / 2, stack.angle);
+      const minY = Math.min(...corners.map(c => c.y));
+      dragOp.handleEl.style.left = `${centerX * scale - 8}px`;
+      dragOp.handleEl.style.top = `${minY * scale - 28}px`;
+    }
+  }
+
   function startStackMove(e, stack) {
     e.preventDefault();
     e.stopPropagation();
@@ -1973,15 +2102,26 @@ const Grid = (() => {
     const rawX = snap(stack.x);
     const rawY = snap(stack.y);
 
+    // Topper-stacking (landing on another same-footprint case) and flush edge-snapping both
+    // assume an axis-aligned rect -- a freely rotated stack's own w/d no longer describe its real
+    // screen-space footprint, so both are skipped for one (it still collides correctly against
+    // everything else, and outside-floor-bounds below, via its real rotated corners).
+    const isAxisAlignedAngle = (() => {
+      const a = ((stack.angle || 0) % 360 + 360) % 360;
+      return a <= 0.5 || a >= 359.5;
+    })();
+
     // Same ordering as handleDrop: try landing on a stackable target using the raw drop point
     // before floor-level neighbor-edge-snapping can pull it off that target.
-    const placement = stack.toppers.length === 0
+    const placement = (isAxisAlignedAngle && stack.toppers.length === 0)
       ? resolvePlacement(stack.footprintW, stack.footprintD, rawX, rawY, stack.id)
       : null;
 
     const { x, y } = placement
       ? { x: rawX, y: rawY }
-      : snapToNeighborEdges(rawX, rawY, stack.footprintW, stack.footprintD, stack.id);
+      : (isAxisAlignedAngle
+        ? snapToNeighborEdges(rawX, rawY, stack.footprintW, stack.footprintD, stack.id)
+        : { x: rawX, y: rawY });
 
     if (!placement && (x < 0 || y < 0 || x + stack.footprintW > project.footprintWidth || y + stack.footprintD > project.footprintDepth)) {
       stack.x = op.startX;
@@ -2040,7 +2180,10 @@ const Grid = (() => {
       return;
     }
 
-    const droppedCorners = aabbCorners(x, y, stack.footprintW, stack.footprintD);
+    const droppedCorners = rotatedCorners(
+      x + stack.footprintW / 2, y + stack.footprintD / 2,
+      stack.footprintW / 2, stack.footprintD / 2, stack.angle || 0
+    );
     if (collidesWithAnything(droppedCorners, { excludeStackId: stack.id, excludeGroupId: null })) {
       stack.x = op.startX;
       stack.y = op.startY;
@@ -2129,7 +2272,8 @@ const Grid = (() => {
         footprintD: topper.footprintD,
         items: topper.items,
         toppers: [],
-        groupId: null
+        groupId: null,
+        angle: 0
       };
       project.stacks.push(newStack);
       if (wasSelected) selectedStackId = newStack.id;
@@ -2228,6 +2372,19 @@ const Grid = (() => {
       return;
     }
 
+    if (dragOp.type === 'stack-rotate') {
+      const stack = project.stacks.find(s => s.id === dragOp.stackId);
+      if (!stack) { dragOp = null; return; }
+      const centerX = stack.x + stack.footprintW / 2;
+      const centerY = stack.y + stack.footprintD / 2;
+      const cx = dragOp.canvasLeft + centerX * scale;
+      const cy = dragOp.canvasTop + centerY * scale;
+      const angleRad = Math.atan2(e.clientY - cy, e.clientX - cx);
+      stack.angle = ((angleRad * 180) / Math.PI + 360) % 360;
+      liveRotateStack(stack);
+      return;
+    }
+
     if (dragOp.type === 'topper-move') {
       const dxPx = e.clientX - dragOp.startMouseX;
       const dyPx = e.clientY - dragOp.startMouseY;
@@ -2311,6 +2468,26 @@ const Grid = (() => {
         return;
       }
       commitStackMove(stack, op);
+      return;
+    }
+
+    if (dragOp.type === 'stack-rotate') {
+      const op = dragOp;
+      dragOp = null;
+      const stack = project.stacks.find(s => s.id === op.stackId);
+      if (!stack) return;
+      const rotated = Math.abs((stack.angle || 0) - op.startAngle) > 0.5;
+      if (!rotated) {
+        stack.angle = op.startAngle;
+        return;
+      }
+      const desiredAngle = stack.angle;
+      const ok = trySetStackAngle(stack, op.startAngle, desiredAngle);
+      if (ok) {
+        pushUndo(op.beforeSnapshot);
+      } else {
+        alert('That rotation would overlap something else or leave the floor. Reverted.');
+      }
       return;
     }
 
@@ -2595,6 +2772,29 @@ const Grid = (() => {
     dimRow.className = 'sel-row';
     dimRow.innerHTML = `<span>Footprint</span><strong>${stack.footprintW.toFixed(1)}"x${stack.footprintD.toFixed(1)}"</strong>`;
 
+    const angleLabel = document.createElement('label');
+    angleLabel.textContent = 'Angle (degrees)';
+    angleLabel.style.display = 'flex';
+    angleLabel.style.flexDirection = 'column';
+    angleLabel.style.gap = '4px';
+    angleLabel.style.fontSize = '0.85rem';
+    angleLabel.style.color = 'var(--text-dim)';
+
+    const angleInput = document.createElement('input');
+    angleInput.type = 'number';
+    angleInput.step = '1';
+    angleInput.value = Math.round(stack.angle || 0);
+    angleInput.addEventListener('change', () => {
+      const ok = setStackAngle(stack.id, parseFloat(angleInput.value) || 0);
+      if (!ok) alert('That rotation would overlap something else or leave the floor. Reverted.');
+      render();
+    });
+    angleLabel.appendChild(angleInput);
+
+    const rotateHint = document.createElement('p');
+    rotateHint.className = 'empty-state';
+    rotateHint.textContent = 'Drag the small handle above it on the floor to rotate freely.';
+
     const countRow = document.createElement('div');
     countRow.className = 'sel-row';
     countRow.innerHTML = `<span>Items stacked</span><strong>${stack.items.length}</strong>`;
@@ -2651,11 +2851,25 @@ const Grid = (() => {
       render();
     });
 
+    const flipBtn = document.createElement('button');
+    flipBtn.type = 'button';
+    flipBtn.className = 'btn-secondary';
+    flipBtn.textContent = 'Face the other direction';
+    flipBtn.title = 'Rotate 180 degrees in place';
+    flipBtn.addEventListener('click', () => {
+      const ok = setStackAngle(stack.id, (stack.angle || 0) + 180);
+      if (!ok) alert('That rotation would overlap something else or leave the floor. Reverted.');
+      render();
+    });
+
+    btnRow.appendChild(flipBtn);
     btnRow.appendChild(removeTopBtn);
     btnRow.appendChild(deleteStackBtn);
 
     detail.appendChild(posRow);
     detail.appendChild(dimRow);
+    detail.appendChild(angleLabel);
+    detail.appendChild(rotateHint);
     detail.appendChild(countRow);
     detail.appendChild(itemsList);
 
