@@ -1501,12 +1501,20 @@ const Grid = (() => {
     if (!group) return;
     pushUndo(snapshotProject());
 
+    // Positions genuinely don't move here (worldCenter is computed from the same dx/dy the group
+    // was built from) -- but losing the group's blue outline the instant it splits made it LOOK
+    // like the boxes jumped, since the eye had nothing left to compare against. Carrying the
+    // members into multi-select (the "about to be grouped" gold outline) keeps a highlight on the
+    // exact same boxes across the split, and doubles as a one-click way to re-group them.
+    multiSelectIds.clear();
+    multiSelectTopperKeys.clear();
     getGroupMembers(group).forEach(({ stack, worldCenter }) => {
       // Flatten back to axis-aligned at the member's current visual center; rotation is a
       // group-only concept, so an ungrouped stack always renders square to the floor again.
       stack.x = snap(worldCenter.x - stack.footprintW / 2);
       stack.y = snap(worldCenter.y - stack.footprintD / 2);
       stack.groupId = null;
+      multiSelectIds.add(stack.id);
     });
 
     project.groups = project.groups.filter(g => g.id !== groupId);

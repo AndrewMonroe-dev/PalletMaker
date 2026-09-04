@@ -1032,6 +1032,11 @@ const Viewer3D = (() => {
         refresh();
       });
       document.getElementById('viewer3dUngroupBtn').addEventListener('click', () => {
+        // Same reasoning as grid.js's handleUngroup: positions don't actually move, but losing
+        // the group's highlight the instant it splits reads as the boxes having jumped. Carry the
+        // members into this view's own multi-select set so they keep a gold outline across the
+        // split (grid.js's own multiSelectIds is set independently, inside handleUngroup itself).
+        selectedStackIds3D = new Set(group.memberIds);
         Grid.ungroupStacks(group.id);
         selectedGroupId3D = null;
         refresh();
