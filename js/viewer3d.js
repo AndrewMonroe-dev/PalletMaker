@@ -590,10 +590,13 @@ const Viewer3D = (() => {
     return baseHeight + maxTopperHeight;
   }
 
-  function addStackHighlight3D(stack, worldCenterGrid, angleDeg) {
+  const HIGHLIGHT_BLUE = 0x3b82f6; // a selected group
+  const HIGHLIGHT_GOLD = 0xe6b422; // shift+click multi-select, about to be grouped (matches the grid)
+
+  function addStackHighlight3D(stack, worldCenterGrid, angleDeg, color = HIGHLIGHT_BLUE) {
     const totalHeight = computeStackTotalHeight(stack) || 1;
     const geo = new THREE.EdgesGeometry(new THREE.BoxGeometry(stack.footprintW, totalHeight, stack.footprintD));
-    const mesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x3b82f6 }));
+    const mesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color }));
     mesh.position.set(toSceneX(worldCenterGrid.x), totalHeight / 2, toSceneZ(worldCenterGrid.y));
     mesh.rotation.y = -(angleDeg * Math.PI) / 180;
     scene.add(mesh);
@@ -654,7 +657,7 @@ const Viewer3D = (() => {
       selectedStackIds3D.forEach(id => {
         const stack = findStack(id);
         if (stack) {
-          addStackHighlight3D(stack, { x: stack.x + stack.footprintW / 2, y: stack.y + stack.footprintD / 2 }, 0);
+          addStackHighlight3D(stack, { x: stack.x + stack.footprintW / 2, y: stack.y + stack.footprintD / 2 }, 0, HIGHLIGHT_GOLD);
         }
       });
     }

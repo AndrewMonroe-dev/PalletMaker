@@ -604,7 +604,7 @@ const Grid = (() => {
     const isMultiSelected = multiSelectIds.has(stack.id);
     el.className = 'grid-stack'
       + (stack.id === selectedStackId ? ' selected' : '')
-      + (isMultiSelected ? ' selected' : '');
+      + (isMultiSelected ? ' multi-selected' : '');
     el.dataset.stackId = stack.id;
     el.style.left = `${stack.x * scale}px`;
     el.style.top = `${stack.y * scale}px`;
@@ -653,7 +653,10 @@ const Grid = (() => {
   function buildStackGrabHandleEl(stack) {
     if (!stack.toppers.length) return null;
     const el = document.createElement('div');
-    el.className = 'stack-grab-handle';
+    // Gold whenever its case is selected (single or shift+click multi-select), so the handle
+    // reads as part of the selected case rather than a separate blue widget sitting on it.
+    const isSelected = stack.id === selectedStackId || multiSelectIds.has(stack.id);
+    el.className = 'stack-grab-handle' + (isSelected ? ' selected' : '');
     el.dataset.stackId = stack.id;
     el.style.left = `${stack.x * scale - 6}px`;
     el.style.top = `${stack.y * scale - 6}px`;
@@ -698,7 +701,7 @@ const Grid = (() => {
     const isMultiSelected = multiSelectTopperKeys.has(topperKey(stack.id, topper.id));
     el.className = 'grid-stack grid-topper'
       + (isTopperSelected(stack.id, topper.id) ? ' selected' : '')
-      + (isMultiSelected ? ' selected' : '');
+      + (isMultiSelected ? ' multi-selected' : '');
     el.dataset.parentStackId = stack.id;
     el.dataset.topperId = topper.id;
     el.style.left = `${(stack.x + topper.dx) * scale}px`;
