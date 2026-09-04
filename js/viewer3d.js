@@ -50,6 +50,11 @@ const Viewer3D = (() => {
   let selectionOutline = null; // wireframe around the selected panel
   let handleMeshes = null;     // { resize, rotate, depth } handles for the selected panel
   let dragOp3d = null;         // in-progress orbit/move/resize/rotate drag
+  const DEPTH_HANDLE_COLOR = 0x22d3ee;      // cyan, at rest
+  const DEPTH_HANDLE_HOVER_COLOR = 0xe6b422; // gold, hovered or actively being dragged -- same
+                                              // gold token used for multi-select elsewhere in the app
+  let depthHandleHovered = false; // so mousemove only touches the material/cursor on a real state change
+  let viewerContainerEl = null; // the 3D canvas's container, for cursor styling
 
   // ---- Stack selection/rotation state (highlight + rotate cases directly in the 3D view) ----
   let stackMeshMap = {};              // three.js object id -> box mesh, rebuilt every buildScene()
@@ -128,6 +133,7 @@ const Viewer3D = (() => {
 
   function bindCanvasInteraction() {
     const container = document.getElementById('viewer3dCanvas');
+    viewerContainerEl = container;
 
     container.addEventListener('mousedown', (e) => {
       if (!project || !renderer) return;
@@ -165,7 +171,7 @@ const Viewer3D = (() => {
     });
 
     window.addEventListener('mousemove', (e) => {
-      if (!dragOp3d) return;
+      if (!dragOp3d) { updateDepthHandleHover(e); return; }
       markDirty(); // every drag type below repositions something visual
       if (dragOp3d.type === 'orbit') doOrbitDrag(e);
       else if (dragOp3d.type === 'move') doMoveDrag(e);
@@ -178,10 +184,21 @@ const Viewer3D = (() => {
       else if (dragOp3d.type === 'pallet-rotate') doPalletRotateDrag3D(e);
     });
 
-    window.addEventListener('mouseup', () => {
+    window.addEventListener('mouseup', (e) => {
       if (!dragOp3d) return;
       const op = dragOp3d;
       dragOp3d = null;
+      // Whatever branch below runs, re-evaluate hover state against wherever the mouse actually
+      // ended up -- otherwise a depth drag (or a plain click that deselected the panel) can leave
+      // the handle/cursor stuck in their mid-drag gold/grabbing state.
+      try {
+        handleMouseUpOp(op, e);
+      } finally {
+        updateDepthHandleHover(e);
+      }
+    });
+
+    function handleMouseUpOp(op, e) {
       if (op.type === 'orbit') {
         // A plain click (no real drag) on empty space deselects -- lets you dismiss the handles
         // without hunting for a dedicated close button.
@@ -226,7 +243,7 @@ const Viewer3D = (() => {
         saveState(state);
         refresh();
       }
-    });
+    }
 
     container.addEventListener('wheel', (e) => {
       if (!project || !camera) return;
@@ -403,6 +420,10 @@ const Viewer3D = (() => {
       startPanelY: panel.y,
       moved: false
     };
+    // Stays gold with a "grabbing" cursor for the whole drag, regardless of where the cursor
+    // wanders off to mid-drag (it's dragging a floor-parallel plane, not tracking the cone itself).
+    if (handleMeshes) handleMeshes.depth.material.color.setHex(DEPTH_HANDLE_HOVER_COLOR);
+    if (viewerContainerEl) viewerContainerEl.style.cursor = 'grabbing';
   }
 
   function doDepthDrag(e) {
@@ -413,6 +434,29 @@ const Viewer3D = (() => {
     if (Math.abs(deltaZ) > 0.05) dragOp3d.moved = true;
     panel.y = dragOp3d.startPanelY + deltaZ;
     liveUpdatePanelTransform(panel);
+  }
+
+  // Hover-only feedback (no drag in progress): turns the depth handle gold and the cursor to a
+  // grab hand the instant the pointer is actually over it, so it's obvious when a click will grab
+  // it instead of starting an orbit drag. Cheap to call every idle mousemove -- one raycast against
+  // a single small mesh, and it no-ops unless the hovered state actually changed.
+  function updateDepthHandleHover(e) {
+    if (!handleMeshes || !renderer || !camera) {
+      if (depthHandleHovered) { depthHandleHovered = false; if (viewerContainerEl) viewerContainerEl.style.cursor = 'default'; }
+      return;
+    }
+    const hit = raycastObjects(e, [handleMeshes.depth]);
+    if (hit && !depthHandleHovered) {
+      depthHandleHovered = true;
+      handleMeshes.depth.material.color.setHex(DEPTH_HANDLE_HOVER_COLOR);
+      if (viewerContainerEl) viewerContainerEl.style.cursor = 'grab';
+      markDirty();
+    } else if (!hit && depthHandleHovered) {
+      depthHandleHovered = false;
+      handleMeshes.depth.material.color.setHex(DEPTH_HANDLE_COLOR);
+      if (viewerContainerEl) viewerContainerEl.style.cursor = 'default';
+      markDirty();
+    }
   }
 
   // ---- Rotate drag: the green handle. Angle is the absolute bearing from the panel's center to
@@ -510,6 +554,11 @@ const Viewer3D = (() => {
       scene.remove(handleMeshes.depth);
       handleMeshes = null;
     }
+    // A rebuilt depth handle always starts at its resting cyan color -- reset the hover flag so
+    // the next mousemove re-applies gold if the cursor genuinely is still sitting on it (it's a
+    // brand new mesh instance every rebuild, not the one the flag was last set against).
+    depthHandleHovered = false;
+    if (viewerContainerEl) viewerContainerEl.style.cursor = 'default';
   }
 
   function buildSelectionVisuals(panel) {
@@ -529,10 +578,11 @@ const Viewer3D = (() => {
     );
     // Cyan, sticking straight out of the panel's own face -- pull it toward or away from you to
     // change depth. Distinct color from resize (blue)/rotate (green) and from a cone shape so it
-    // reads as "push/pull" rather than another sphere handle to confuse with the other two.
+    // reads as "push/pull" rather than another sphere handle to confuse with the other two. Sized
+    // noticeably bigger than the resize/rotate spheres -- it was too easy to miss/undershoot.
     const depthHandle = new THREE.Mesh(
-      new THREE.ConeGeometry(0.5, 1.4, 10),
-      new THREE.MeshBasicMaterial({ color: 0x22d3ee })
+      new THREE.ConeGeometry(1.1, 2.6, 12),
+      new THREE.MeshBasicMaterial({ color: DEPTH_HANDLE_COLOR })
     );
     handleMeshes = { resize: resizeHandle, rotate: rotateHandle, depth: depthHandle };
     scene.add(resizeHandle);
