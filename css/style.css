@@ -444,11 +444,17 @@ select {
 .grid-stack:active { cursor: grabbing; }
 .grid-stack.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* Shift+click multi-select (the "about to be grouped" state) reads gold, distinct from the blue
-   single selection, with a light gold wash over the box itself. */
+   single selection, with a light gold wash over the box itself. Shimmer animation matches the
+   ShelfIntelligence project's Bota gold shimmer (assets/css/planogram.css, bota-shimmer-* keyframes):
+   same pulsing inset ring + outer glow, same 2.4s ease-in-out infinite timing. */
 .grid-stack.multi-selected {
   outline: 2px solid var(--gold);
   outline-offset: 1px;
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6), inset 0 0 0 100vmax rgba(230,180,34,0.35);
+  animation: gold-shimmer 2.4s ease-in-out infinite;
+}
+@keyframes gold-shimmer {
+  0%, 100% { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6), inset 0 0 0 100vmax rgba(230,180,34,0.35), 0 0 8px 1px rgba(230,180,34,0.45); }
+  50% { box-shadow: inset 0 0 0 1px rgba(0,0,0,0.6), inset 0 0 0 100vmax rgba(230,180,34,0.5), 0 0 18px 5px rgba(230,180,34,0.9); }
 }
 .grid-stack.drag-over-invalid { outline: 2px solid var(--danger); }
 
@@ -471,7 +477,11 @@ select {
   box-shadow: 0 1px 3px rgba(0,0,0,0.6);
 }
 .stack-grab-handle:active { cursor: grabbing; }
-.stack-grab-handle.selected { background: var(--gold); }
+.stack-grab-handle.selected { background: var(--gold); animation: gold-shimmer-handle 2.4s ease-in-out infinite; }
+@keyframes gold-shimmer-handle {
+  0%, 100% { box-shadow: 0 1px 3px rgba(0,0,0,0.6), 0 0 4px 1px rgba(230,180,34,0.45); }
+  50% { box-shadow: 0 1px 3px rgba(0,0,0,0.6), 0 0 10px 3px rgba(230,180,34,0.9); }
+}
 
 .grid-drag-preview {
   position: absolute;

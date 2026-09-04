@@ -596,11 +596,33 @@ const Viewer3D = (() => {
   function addStackHighlight3D(stack, worldCenterGrid, angleDeg, color = HIGHLIGHT_BLUE) {
     const totalHeight = computeStackTotalHeight(stack) || 1;
     const geo = new THREE.EdgesGeometry(new THREE.BoxGeometry(stack.footprintW, totalHeight, stack.footprintD));
-    const mesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color }));
+    const isGold = color === HIGHLIGHT_GOLD;
+    const material = new THREE.LineBasicMaterial({ color, transparent: isGold });
+    const mesh = new THREE.LineSegments(geo, material);
     mesh.position.set(toSceneX(worldCenterGrid.x), totalHeight / 2, toSceneZ(worldCenterGrid.y));
     mesh.rotation.y = -(angleDeg * Math.PI) / 180;
+    if (isGold) mesh.userData.shimmer = true;
     scene.add(mesh);
     stackHighlights.push(mesh);
+  }
+
+  // Pulses gold multi-select highlights the same way the grid's CSS gold-shimmer keyframes do
+  // (ShelfIntelligence's Bota shimmer: 2.4s ease-in-out, dim<->bright) -- opacity + a gold<->pale
+  // gold color lerp standing in for the glow intensity a box-shadow can't express in WebGL.
+  const SHIMMER_PERIOD_MS = 2400;
+  const SHIMMER_BASE = new THREE.Color(HIGHLIGHT_GOLD);
+  const SHIMMER_BRIGHT = new THREE.Color(0xfff3c0);
+  function tickShimmer() {
+    let any = false;
+    for (const mesh of stackHighlights) {
+      if (!mesh.userData.shimmer) continue;
+      any = true;
+      const phase = (performance.now() % SHIMMER_PERIOD_MS) / SHIMMER_PERIOD_MS; // 0..1
+      const pulse = (Math.sin(phase * Math.PI * 2 - Math.PI / 2) + 1) / 2; // eases like the CSS 0%/50%/100%
+      mesh.material.opacity = 0.55 + pulse * 0.45;
+      mesh.material.color.copy(SHIMMER_BASE).lerp(SHIMMER_BRIGHT, pulse * 0.6);
+    }
+    return any;
   }
 
   // The angle a stack's own boxes are turned to face. An ungrouped stack is always axis-aligned
@@ -1579,6 +1601,7 @@ const Viewer3D = (() => {
     if (animFrameId) return;
     needsRender = true; // always paint at least once when the loop (re)starts
     const loop = () => {
+      if (tickShimmer()) needsRender = true; // keep rendering while any gold highlight is pulsing
       if (needsRender && renderer && scene && camera) {
         renderer.render(scene, camera);
         needsRender = false;
