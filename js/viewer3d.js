@@ -48,7 +48,7 @@ const Viewer3D = (() => {
   let panelMeshMap = {};       // panel id -> its plane mesh, rebuilt every buildScene()
   let selectedPanelId = null;  // ephemeral view state, not persisted
   let selectionOutline = null; // wireframe around the selected panel
-  let handleMeshes = null;     // { resize, rotate } spheres for the selected panel
+  let handleMeshes = null;     // { resize, rotate, depth } handles for the selected panel
   let dragOp3d = null;         // in-progress orbit/move/resize/rotate drag
 
   // ---- Stack selection/rotation state (highlight + rotate cases directly in the 3D view) ----
@@ -142,6 +142,7 @@ const Viewer3D = (() => {
       if (handleMeshes) {
         candidates.push({ obj: handleMeshes.resize, kind: 'resize' });
         candidates.push({ obj: handleMeshes.rotate, kind: 'rotate' });
+        candidates.push({ obj: handleMeshes.depth, kind: 'depth' });
       }
       if (groupRotateHandle3D) candidates.push({ obj: groupRotateHandle3D, kind: 'group-rotate' });
       if (palletRotateHandle3D) candidates.push({ obj: palletRotateHandle3D, kind: 'pallet-rotate' });
@@ -155,6 +156,7 @@ const Viewer3D = (() => {
 
       if (kind === 'resize') startResizeDrag(e);
       else if (kind === 'rotate') startRotateDrag(e);
+      else if (kind === 'depth') startDepthDrag(e);
       else if (kind === 'group-rotate') startGroupRotateDrag3D(e);
       else if (kind === 'pallet-rotate') startPalletRotateDrag3D(e);
       else if (kind === 'panel') startMoveDrag(e, hit.object.userData.panelId);
@@ -169,6 +171,7 @@ const Viewer3D = (() => {
       else if (dragOp3d.type === 'move') doMoveDrag(e);
       else if (dragOp3d.type === 'resize') doResizeDrag(e);
       else if (dragOp3d.type === 'rotate') doRotateDrag(e);
+      else if (dragOp3d.type === 'depth') doDepthDrag(e);
       else if (dragOp3d.type === 'group-rotate') doGroupRotateDrag3D(e);
       else if (dragOp3d.type === 'group-move') doGroupMoveDrag3D(e);
       else if (dragOp3d.type === 'pallet-move') doPalletMoveDrag3D(e);
@@ -382,6 +385,36 @@ const Viewer3D = (() => {
     liveResizePanelMesh(panel);
   }
 
+  // ---- Depth drag: the cyan handle. Body-dragging a panel raycasts against the panel's OWN
+  // plane (a plane of constant depth), so it can only ever change x/height -- depth can never
+  // move that way no matter how you drag, which is exactly the "clunky" complaint this handle
+  // fixes. This raycasts against a horizontal floor-parallel plane instead (same convention
+  // stacks already use), and only ever applies the resulting Z component -- x is deliberately
+  // left alone so this handle does one thing (depth) without fighting the body-drag's x control. ----
+
+  function startDepthDrag(e) {
+    const panel = findPanel(selectedPanelId);
+    if (!panel) return;
+    const center = panelWorldCenter(panel);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -center.y);
+    dragOp3d = {
+      type: 'depth', panelId: panel.id, plane,
+      startPoint: raycastPlane(e, plane),
+      startPanelY: panel.y,
+      moved: false
+    };
+  }
+
+  function doDepthDrag(e) {
+    const panel = findPanel(dragOp3d.panelId);
+    const point = raycastPlane(e, dragOp3d.plane);
+    if (!panel || !point || !dragOp3d.startPoint) return;
+    const deltaZ = point.z - dragOp3d.startPoint.z;
+    if (Math.abs(deltaZ) > 0.05) dragOp3d.moved = true;
+    panel.y = dragOp3d.startPanelY + deltaZ;
+    liveUpdatePanelTransform(panel);
+  }
+
   // ---- Rotate drag: the green handle. Angle is the absolute bearing from the panel's center to
   // the cursor (projected onto a horizontal plane through the panel), same "point where you drag"
   // convention as the 2D grid's group rotate handle. ----
@@ -474,6 +507,7 @@ const Viewer3D = (() => {
     if (handleMeshes) {
       scene.remove(handleMeshes.resize);
       scene.remove(handleMeshes.rotate);
+      scene.remove(handleMeshes.depth);
       handleMeshes = null;
     }
   }
@@ -493,9 +527,17 @@ const Viewer3D = (() => {
       new THREE.SphereGeometry(0.6, 12, 12),
       new THREE.MeshBasicMaterial({ color: 0x22c55e })
     );
-    handleMeshes = { resize: resizeHandle, rotate: rotateHandle };
+    // Cyan, sticking straight out of the panel's own face -- pull it toward or away from you to
+    // change depth. Distinct color from resize (blue)/rotate (green) and from a cone shape so it
+    // reads as "push/pull" rather than another sphere handle to confuse with the other two.
+    const depthHandle = new THREE.Mesh(
+      new THREE.ConeGeometry(0.5, 1.4, 10),
+      new THREE.MeshBasicMaterial({ color: 0x22d3ee })
+    );
+    handleMeshes = { resize: resizeHandle, rotate: rotateHandle, depth: depthHandle };
     scene.add(resizeHandle);
     scene.add(rotateHandle);
+    scene.add(depthHandle);
     updateHandlePositions(panel);
   }
 
@@ -513,6 +555,12 @@ const Viewer3D = (() => {
     handleMeshes.rotate.position.copy(
       center.clone().add(new THREE.Vector3(0, halfH + 2, 0)).add(normal.clone().multiplyScalar(0.5))
     );
+    handleMeshes.depth.position.copy(
+      center.clone().add(normal.clone().multiplyScalar(2))
+    );
+    // Point the cone along the panel's own normal (its default +Y axis rotated to align with it),
+    // reinforcing the push/pull direction visually.
+    handleMeshes.depth.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
   }
 
   // ---- Stack selection, highlighting, and group rotation directly in the 3D view ----
