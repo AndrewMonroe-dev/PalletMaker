@@ -84,6 +84,12 @@ const Grid = (() => {
     }, { passive: false });
     window.addEventListener('mousemove', handlePointerMove);
     window.addEventListener('mouseup', handlePointerUp);
+    // A mouseup that lands outside the browser window (released over the taskbar, another app,
+    // or after an alt-tab mid-drag) never reaches this page, which left dragOp stuck: the next
+    // mouse movement anywhere kept dragging the item, and the 4-second autosave could then
+    // persist a half-dragged, un-snapped position. Losing window focus is the reliable signal
+    // that a drag can't be completed -- revert it cleanly instead.
+    window.addEventListener('blur', cancelActiveDrag);
     window.addEventListener('keydown', (e) => {
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
@@ -102,8 +108,20 @@ const Grid = (() => {
 
   // ---- Undo/redo (per active project, in-memory only) ----
 
+  // A snapshot is taken on EVERY mousedown on the floor (startStackMove/startGroupMove/etc. stash
+  // a "before" copy in case the drag turns into a real commit) and on every mutation. A naive
+  // JSON deep copy of the whole project included every image panel's full base64 photo -- a few
+  // panels at phone-photo size meant megabytes of string copying per click, and up to 50 of
+  // those copies held in the undo stack at once. That's a real, growing memory/CPU cost over a
+  // long session and a strong candidate for "the grid stops working after a while." The photo
+  // strings are immutable, so the snapshot only needs to deep-copy the layout data and can share
+  // each panel's dataUrl by reference.
   function snapshotProject() {
-    return project ? JSON.parse(JSON.stringify(project)) : null;
+    if (!project) return null;
+    const panels = project.imagePanels || [];
+    const copy = JSON.parse(JSON.stringify({ ...project, imagePanels: [] }));
+    copy.imagePanels = panels.map(p => ({ ...p }));
+    return copy;
   }
 
   function pushUndo(snap) {
@@ -740,7 +758,9 @@ const Grid = (() => {
         if (avgColor) {
           sw.avgColor = avgColor;
           saveState(state);
-          render();
+          // Never re-render mid-drag: render() tears down the canvas, including the element
+          // currently being dragged, so it would stop following the mouse until mouseup.
+          if (!dragOp) render();
         }
       });
     }
@@ -2249,6 +2269,22 @@ const Grid = (() => {
     }
   }
 
+  // Abandons an in-progress drag and puts the data back exactly where it started (the "before"
+  // snapshot every drag type already carries), then re-renders so the DOM matches.
+  function cancelActiveDrag() {
+    if (!dragOp || !project) { dragOp = null; return; }
+    const op = dragOp;
+    dragOp = null;
+    if (op.beforeSnapshot) {
+      const idx = state.projects.findIndex(p => p.id === op.beforeSnapshot.id);
+      if (idx !== -1) {
+        state.projects[idx] = op.beforeSnapshot;
+        project = op.beforeSnapshot;
+      }
+    }
+    render();
+  }
+
   function handlePointerUp() {
     if (!dragOp || !project) { dragOp = null; return; }
 
@@ -2542,7 +2578,7 @@ const Grid = (() => {
 
     const posRow = document.createElement('div');
     posRow.className = 'sel-row';
-    posRow.innerHTML = `<span>Position</span><strong>${stack.x}", ${stack.y}"</strong>`;
+    posRow.innerHTML = `<span>Position</span><strong>${stack.x.toFixed(1)}", ${stack.y.toFixed(1)}"</strong>`;
 
     const dimRow = document.createElement('div');
     dimRow.className = 'sel-row';

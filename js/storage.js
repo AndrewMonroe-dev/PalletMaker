@@ -15,10 +15,19 @@ function loadState() {
 }
 
 let quotaWarningShown = false; // avoid re-alerting on every periodic autosave tick once already told
+let lastSavedJson = null; // the exact string last written, so an unchanged state isn't rewritten
 
 function saveState(state) {
+  const json = JSON.stringify(state);
+  // The 4-second safety-net autosave (main.js) and the many explicit saveState() calls made this
+  // rewrite the full state -- to localStorage AND to the connected file on disk -- even when
+  // nothing had changed since the last write. Stringifying is unavoidable to know that, but the
+  // storage write and the disk write (the expensive, I/O-bound parts) are skipped when the result
+  // is byte-identical to what was last saved.
+  if (json === lastSavedJson) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(STORAGE_KEY, json);
+    lastSavedJson = json;
   } catch (e) {
     // Real, previously-silent failure mode: localStorage typically caps around 5-10MB per origin,
     // and full-resolution uploaded photos can burn through that fast (several MB apiece). Before
@@ -37,7 +46,7 @@ function saveState(state) {
   // saveState() call site with no other changes needed. Runs even if the localStorage save above
   // failed -- a connected file is actually MORE likely to succeed in exactly that situation, since
   // it isn't bound by the same small per-origin quota.
-  if (typeof FileSync !== 'undefined') FileSync.write(state);
+  if (typeof FileSync !== 'undefined') FileSync.write(json);
 }
 
 function defaultState() {

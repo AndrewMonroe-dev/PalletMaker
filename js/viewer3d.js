@@ -132,44 +132,34 @@ const Viewer3D = (() => {
     container.addEventListener('mousedown', (e) => {
       if (!project || !renderer) return;
 
-      // Handles (if a panel is selected) take priority over panel bodies, which take priority
-      // over the empty-space orbit drag -- known simplification: this only hit-tests handles and
-      // panel planes, not the item boxes in front of them, so a panel fully hidden behind a box
-      // can still be grabbed through it.
+      // One raycast against EVERY interactive object at once, dispatching on whichever is
+      // physically closest to the camera. The previous version tested each kind in a fixed
+      // priority order (handles, then panels, then pallet markers, then cases) regardless of
+      // depth -- so a case sitting on top of a pallet marker started a pallet drag when clicked,
+      // because the marker's hit plane was checked first even though the case was in front of it.
+      // Same class of bug as the 2D grid's marker z-order fix, just in 3D.
+      const candidates = [];
       if (handleMeshes) {
-        if (raycastObjects(e, [handleMeshes.resize])) { startResizeDrag(e); return; }
-        if (raycastObjects(e, [handleMeshes.rotate])) { startRotateDrag(e); return; }
+        candidates.push({ obj: handleMeshes.resize, kind: 'resize' });
+        candidates.push({ obj: handleMeshes.rotate, kind: 'rotate' });
       }
+      if (groupRotateHandle3D) candidates.push({ obj: groupRotateHandle3D, kind: 'group-rotate' });
+      if (palletRotateHandle3D) candidates.push({ obj: palletRotateHandle3D, kind: 'pallet-rotate' });
+      Object.values(panelMeshMap).forEach(obj => candidates.push({ obj, kind: 'panel' }));
+      Object.values(palletHitMeshMap).forEach(obj => candidates.push({ obj, kind: 'pallet' }));
+      Object.values(stackMeshMap).forEach(obj => candidates.push({ obj, kind: 'stack' }));
 
-      const panelHit = raycastObjects(e, Object.values(panelMeshMap));
-      if (panelHit) {
-        startMoveDrag(e, panelHit.object.userData.panelId);
-        return;
-      }
+      const hit = raycastObjects(e, candidates.map(c => c.obj));
+      if (!hit) { startOrbitDrag(e); return; }
+      const kind = candidates.find(c => c.obj === hit.object).kind;
 
-      if (groupRotateHandle3D && raycastObjects(e, [groupRotateHandle3D])) {
-        startGroupRotateDrag3D(e);
-        return;
-      }
-
-      if (palletRotateHandle3D && raycastObjects(e, [palletRotateHandle3D])) {
-        startPalletRotateDrag3D(e);
-        return;
-      }
-
-      const palletHit = raycastObjects(e, Object.values(palletHitMeshMap));
-      if (palletHit) {
-        startPalletMoveDrag3D(e, palletHit.object.userData.palletId);
-        return;
-      }
-
-      const stackHit = raycastObjects(e, Object.values(stackMeshMap));
-      if (stackHit) {
-        startStackInteractionDrag3D(e, stackHit.object.userData.stackId);
-        return;
-      }
-
-      startOrbitDrag(e);
+      if (kind === 'resize') startResizeDrag(e);
+      else if (kind === 'rotate') startRotateDrag(e);
+      else if (kind === 'group-rotate') startGroupRotateDrag3D(e);
+      else if (kind === 'pallet-rotate') startPalletRotateDrag3D(e);
+      else if (kind === 'panel') startMoveDrag(e, hit.object.userData.panelId);
+      else if (kind === 'pallet') startPalletMoveDrag3D(e, hit.object.userData.palletId);
+      else if (kind === 'stack') startStackInteractionDrag3D(e, hit.object.userData.stackId);
     });
 
     window.addEventListener('mousemove', (e) => {
@@ -610,6 +600,16 @@ const Viewer3D = (() => {
     stackHighlights.push(mesh);
   }
 
+  // The angle a stack's own boxes are turned to face. An ungrouped stack is always axis-aligned
+  // on the floor (0) unless its facing has been reversed (180); a grouped stack turns with its
+  // group AND keeps its own reversal on top of that -- grouping used to silently lose the flip.
+  // Deliberately separate from the angle used to POSITION things (see addStackMeshes): a 180
+  // turn about a box's own center leaves its footprint identical, so it's safe to apply to the
+  // box alone without moving anything else.
+  function stackFacingAngle(stack, positionAngle) {
+    return positionAngle + (stack.facingFlipped ? 180 : 0);
+  }
+
   function removeStackHighlights3D() {
     stackHighlights.forEach(m => scene.remove(m));
     stackHighlights = [];
@@ -654,7 +654,7 @@ const Viewer3D = (() => {
       selectedStackIds3D.forEach(id => {
         const stack = findStack(id);
         if (stack) {
-          addStackHighlight3D(stack, { x: stack.x + stack.footprintW / 2, y: stack.y + stack.footprintD / 2 }, stack.facingFlipped ? 180 : 0);
+          addStackHighlight3D(stack, { x: stack.x + stack.footprintW / 2, y: stack.y + stack.footprintD / 2 }, 0);
         }
       });
     }
@@ -720,11 +720,19 @@ const Viewer3D = (() => {
     // visual only, group.angle itself is never touched until the drag commits on mouseup.
     const previewMembers = computeGroupMemberWorldCentersAtTransform(group, group.centerX, group.centerY, angle);
     previewMembers.forEach(({ stackId, worldCenter }) => {
+      const stack = findStack(stackId);
       const boxes = stackBoxesByStackId[stackId] || [];
       boxes.forEach(box => {
-        box.position.x = toSceneX(worldCenter.x);
-        box.position.z = toSceneZ(worldCenter.y);
-        box.rotation.y = -(angle * Math.PI) / 180;
+        // Each box remembers its own offset from the stack's center (a topper sits off-center)
+        // so the live preview keeps toppers riding in place instead of collapsing every box
+        // onto the stack center until the drag commits.
+        const off = box.userData.localOffset || { x: 0, y: 0 };
+        const a = (angle * Math.PI) / 180;
+        const cos = Math.cos(a), sin = Math.sin(a);
+        box.position.x = toSceneX(worldCenter.x + off.x * cos - off.y * sin);
+        box.position.z = toSceneZ(worldCenter.y + off.x * sin + off.y * cos);
+        const faceAngle = box.userData.isTopper ? angle : stackFacingAngle(stack || {}, angle);
+        box.rotation.y = -(faceAngle * Math.PI) / 180;
       });
     });
 
@@ -773,11 +781,14 @@ const Viewer3D = (() => {
     dragOp3d.previewCenterY = newCenterY;
 
     const previewMembers = computeGroupMemberWorldCentersAtTransform(group, newCenterX, newCenterY, group.angle);
+    const a = (group.angle * Math.PI) / 180;
+    const cos = Math.cos(a), sin = Math.sin(a);
     previewMembers.forEach(({ stackId, worldCenter }) => {
       const boxes = stackBoxesByStackId[stackId] || [];
       boxes.forEach(box => {
-        box.position.x = toSceneX(worldCenter.x);
-        box.position.z = toSceneZ(worldCenter.y);
+        const off = box.userData.localOffset || { x: 0, y: 0 };
+        box.position.x = toSceneX(worldCenter.x + off.x * cos - off.y * sin);
+        box.position.z = toSceneZ(worldCenter.y + off.x * sin + off.y * cos);
       });
     });
 
@@ -1119,12 +1130,59 @@ const Viewer3D = (() => {
         materials.forEach((mat) => {
           Object.keys(mat).forEach((key) => {
             const value = mat[key];
-            if (value && value.isTexture) value.dispose();
+            // Swatch photo textures live in textureCache and are reused across rebuilds -- only
+            // dispose textures that aren't cached (image panels, one-offs).
+            if (value && value.isTexture && !cachedTextures.has(value)) value.dispose();
           });
           mat.dispose();
         });
       }
+      // The shadow-casting light's shadow map is a full 1536x1536 GPU render target allocated by
+      // the renderer the first time it draws that light. It is NOT reachable through
+      // geometry/material and was silently leaked on every scene rebuild (each rebuild creates a
+      // brand-new DirectionalLight) -- ~9MB of VRAM per refresh, and refresh() runs after every
+      // 3D drag commit, panel field edit, and tab visit. This is the leak the earlier
+      // renderer-reuse fix missed.
+      if (obj.isLight && obj.shadow && obj.shadow.map) {
+        obj.shadow.map.dispose();
+        obj.shadow.map = null;
+      }
     });
+  }
+
+  // ---- Swatch texture cache ----
+  // A rebuild used to call TextureLoader.load() for every box's front/side/back photo -- decoding
+  // the same data URL once per box, per rebuild (50 boxes of one SKU = 50 decodes of one photo,
+  // every time anything changed). Keyed by the data URL string itself so identical photos share
+  // one GPU texture; pruned to what the current build actually references so a deleted swatch's
+  // texture doesn't linger forever.
+  const textureCache = new Map(); // dataUrl -> THREE.Texture
+  const cachedTextures = new Set(); // the same textures, for a fast "is this one cached" check
+  let texturesUsedThisBuild = new Set();
+
+  function getCachedTexture(dataUrl) {
+    let tex = textureCache.get(dataUrl);
+    if (!tex) {
+      // Render-on-demand means a texture finishing its async decode has to explicitly request a
+      // repaint -- without markDirty here, photo faces stayed blank until the next orbit/drag
+      // happened to trigger a frame.
+      tex = new THREE.TextureLoader().load(dataUrl, () => markDirty());
+      textureCache.set(dataUrl, tex);
+      cachedTextures.add(tex);
+    }
+    texturesUsedThisBuild.add(dataUrl);
+    return tex;
+  }
+
+  function pruneTextureCache() {
+    textureCache.forEach((tex, dataUrl) => {
+      if (!texturesUsedThisBuild.has(dataUrl)) {
+        tex.dispose();
+        cachedTextures.delete(tex);
+        textureCache.delete(dataUrl);
+      }
+    });
+    texturesUsedThisBuild = new Set();
   }
 
   function buildScene() {
@@ -1149,7 +1207,12 @@ const Viewer3D = (() => {
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0a0c0f);
 
-    camera = new THREE.PerspectiveCamera(45, width / height, 1, 5000);
+    // The camera object survives rebuilds; only its aspect is refreshed. Recreating it (and
+    // resetting radius/orbit target -- see the end of this function) on every refresh() meant
+    // the view jumped back to the default zoom/pan after every drag commit and every field edit.
+    if (!camera) camera = new THREE.PerspectiveCamera(45, width / height, 1, 5000);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
 
     const maxDim = Math.max(project.footprintWidth, project.footprintDepth);
 
@@ -1192,12 +1255,12 @@ const Viewer3D = (() => {
     floor.receiveShadow = true;
     scene.add(floor);
 
-    const divisions = Math.max(1, Math.round(maxDim / 6));
-    scene.add(new THREE.GridHelper(maxDim, divisions, 0x444444, 0x2a2d35));
+    scene.add(buildFloorGrid());
 
     addStacksToScene();
     addImagePanelsToScene();
     addPalletsToScene();
+    pruneTextureCache();
 
     // Selection is ephemeral view state that survives a scene rebuild, but the group/stacks it
     // points at might not (e.g. the group was deleted from the 2D grid) -- validate before
@@ -1206,10 +1269,43 @@ const Viewer3D = (() => {
     selectedStackIds3D.forEach(id => { if (!findStack(id)) selectedStackIds3D.delete(id); });
     rebuildSelectionVisuals3D();
 
-    radius = maxDim * 1.4 + 40;
-    orbitTargetX = 0;
-    orbitTargetZ = 0;
+    // Only reset the view when looking at a different project (or one whose floor size changed)
+    // -- otherwise the user's current zoom/pan/orbit is exactly what they want to keep.
+    const viewKey = `${project.id}:${project.footprintWidth}x${project.footprintDepth}`;
+    if (viewKey !== lastViewKey) {
+      lastViewKey = viewKey;
+      radius = maxDim * 1.4 + 40;
+      orbitTargetX = 0;
+      orbitTargetZ = 0;
+    }
     updateCameraPosition();
+  }
+
+  let lastViewKey = null;
+
+  // Grid lines that actually correspond to the floor: sized exactly to the floor's own width and
+  // depth (not a square of the larger dimension centered at the origin, which hung past the short
+  // edge and never lined up with the floor's corners), spaced every 6 inches from the floor's
+  // top-left corner so every line coincides with one of the 2D grid's 1-inch lines, and lifted a
+  // hair above the floor plane so it doesn't z-fight/flicker against it.
+  function buildFloorGrid() {
+    const w = project.footprintWidth;
+    const d = project.footprintDepth;
+    const spacing = 6;
+    const y = 0.02;
+    const points = [];
+    for (let x = 0; x <= w + 1e-6; x += spacing) {
+      points.push(toSceneX(x), y, toSceneZ(0), toSceneX(x), y, toSceneZ(d));
+    }
+    for (let z = 0; z <= d + 1e-6; z += spacing) {
+      points.push(toSceneX(0), y, toSceneZ(z), toSceneX(w), y, toSceneZ(z));
+    }
+    // Always close the far edges even when the floor size isn't a multiple of the spacing.
+    points.push(toSceneX(w), y, toSceneZ(0), toSceneX(w), y, toSceneZ(d));
+    points.push(toSceneX(0), y, toSceneZ(d), toSceneX(w), y, toSceneZ(d));
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+    return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x3a3e48, transparent: true, opacity: 0.8 }));
   }
 
   function toSceneX(gridX) { return gridX - project.footprintWidth / 2; }
@@ -1220,11 +1316,7 @@ const Viewer3D = (() => {
     stackBoxesByStackId = {};
 
     project.stacks.filter(s => !s.groupId).forEach(stack => {
-      // A plain 180 flip (not an arbitrary angle) so the floor footprint's axis-aligned bounding
-      // box is always identical either way -- a rectangle rotated exactly 180 degrees covers the
-      // same rect it started in, so this needs no collision re-check and can't disagree with the
-      // 2D grid's fixed-orientation footprint the way a 90-degree turn would.
-      addStackMeshes(stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, stack.facingFlipped ? 180 : 0);
+      addStackMeshes(stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, 0);
     });
 
     project.groups.forEach(group => {
@@ -1234,8 +1326,15 @@ const Viewer3D = (() => {
     });
   }
 
-  function addStackMeshes(stack, centerGridX, centerGridY, angleDeg) {
-    const baseHeight = addItemColumn(stack.id, stack.items, centerGridX, centerGridY, angleDeg, 0, stack.footprintW, stack.footprintD);
+  // positionAngle is the angle everything is LAID OUT at (0 for a loose stack, the group's angle
+  // for a grouped one) -- it drives where toppers sit relative to the base. The base's own boxes
+  // additionally turn by the stack's facing flip (see stackFacingAngle). Passing the flip in as
+  // the layout angle, as this used to, spun the toppers 180 degrees around the case center too,
+  // so units on top of a reversed case showed up on the opposite side from where the 2D grid
+  // (which never rotates toppers for a flip) had them.
+  function addStackMeshes(stack, centerGridX, centerGridY, positionAngle) {
+    const faceAngle = stackFacingAngle(stack, positionAngle);
+    const baseHeight = addItemColumn(stack.id, stack.items, centerGridX, centerGridY, faceAngle, 0, stack.footprintW, stack.footprintD, { x: 0, y: 0 }, false);
 
     // Toppers sit on top of the base column, offset within the stack's own footprint and rotated
     // rigidly with it -- same transform used for their 2D counterpart in grid.js. Tagged with the
@@ -1244,11 +1343,11 @@ const Viewer3D = (() => {
     (stack.toppers || []).forEach(topper => {
       const offsetX = topper.dx + topper.footprintW / 2 - stack.footprintW / 2;
       const offsetY = topper.dy + topper.footprintD / 2 - stack.footprintD / 2;
-      const a = (angleDeg * Math.PI) / 180;
+      const a = (positionAngle * Math.PI) / 180;
       const cos = Math.cos(a), sin = Math.sin(a);
       const topperCenterX = centerGridX + offsetX * cos - offsetY * sin;
       const topperCenterY = centerGridY + offsetX * sin + offsetY * cos;
-      addItemColumn(stack.id, topper.items, topperCenterX, topperCenterY, angleDeg, baseHeight, topper.footprintW, topper.footprintD);
+      addItemColumn(stack.id, topper.items, topperCenterX, topperCenterY, positionAngle, baseHeight, topper.footprintW, topper.footprintD, { x: offsetX, y: offsetY }, true);
     });
   }
 
@@ -1256,8 +1355,9 @@ const Viewer3D = (() => {
   // starting at startHeight, each box at its own real footprint centered on the column. Returns
   // the height the column reached, so a caller can stack something else on top of it. Every box
   // is tagged with its owning stack's id (for click-to-select/highlight/rotate in the 3D view) and
-  // recorded in stackBoxesByStackId (for live-repositioning it during a rotate drag).
-  function addItemColumn(stackId, items, centerGridX, centerGridY, angleDeg, startHeight, fallbackW, fallbackD) {
+  // recorded in stackBoxesByStackId (for live-repositioning it during a rotate drag), along with
+  // its un-rotated offset from the stack's center so that live preview can keep toppers in place.
+  function addItemColumn(stackId, items, centerGridX, centerGridY, angleDeg, startHeight, fallbackW, fallbackD, localOffset, isTopper) {
     let yCursor = startHeight;
     items.forEach(item => {
       const itemHeight = getItemHeight(item);
@@ -1271,6 +1371,8 @@ const Viewer3D = (() => {
       box.position.set(toSceneX(centerGridX), yCursor + itemHeight / 2, toSceneZ(centerGridY));
       box.rotation.y = -(angleDeg * Math.PI) / 180;
       box.userData.stackId = stackId;
+      box.userData.localOffset = localOffset || { x: 0, y: 0 };
+      box.userData.isTopper = !!isTopper;
       stackMeshMap[box.id] = box;
       (stackBoxesByStackId[stackId] || (stackBoxesByStackId[stackId] = [])).push(box);
       scene.add(box);
@@ -1300,29 +1402,25 @@ const Viewer3D = (() => {
   }
 
   function buildBoxMesh(width, height, depth, sw) {
-    const color = sw ? sw.color : '#888888';
+    // The front photo's cached predominant color (sampled once at upload, storage.js) is the
+    // fallback for every face without its own image -- top/bottom always, side/back if the swatch
+    // didn't upload one. Reading the cached value replaces a per-box, per-rebuild canvas resample
+    // of the decoded photo that ran once for every single box on the floor.
+    const color = sw ? ((sw.image && sw.avgColor) || sw.color) : '#888888';
     const flatMat = new THREE.MeshStandardMaterial({ color });
 
     // Plain stretch to fill the entire face -- BoxGeometry's default UV mapping already covers
     // each face 0..1, so the image fills every pixel with no cropping, at the cost of distorting
     // its aspect ratio if the face's own proportions differ from the photo's. Same tradeoff
     // applies to the optional side/back images below.
-    let frontMat = flatMat;
-    if (sw && sw.image) {
-      const texture = new THREE.TextureLoader().load(sw.image, (tex) => {
-        // The front photo's average color is the fallback for every face that doesn't have its
-        // own image -- top/bottom always, side/back if the swatch didn't upload one.
-        const avgColor = computeAverageColor(tex.image);
-        if (avgColor) flatMat.color.set(avgColor);
-      });
-      frontMat = new THREE.MeshStandardMaterial({ map: texture });
-    }
-
+    const frontMat = (sw && sw.image)
+      ? new THREE.MeshStandardMaterial({ map: getCachedTexture(sw.image) })
+      : flatMat;
     const sideMat = (sw && sw.sideImage)
-      ? new THREE.MeshStandardMaterial({ map: new THREE.TextureLoader().load(sw.sideImage) })
+      ? new THREE.MeshStandardMaterial({ map: getCachedTexture(sw.sideImage) })
       : flatMat;
     const backMat = (sw && sw.backImage)
-      ? new THREE.MeshStandardMaterial({ map: new THREE.TextureLoader().load(sw.backImage) })
+      ? new THREE.MeshStandardMaterial({ map: getCachedTexture(sw.backImage) })
       : flatMat;
 
     // BoxGeometry material order: +X, -X, +Y, -Y, +Z, -Z. Front (largest grid-Y) maps to +Z,
@@ -1335,32 +1433,10 @@ const Viewer3D = (() => {
     return mesh;
   }
 
-  // Samples the average color of an uploaded photo (via an offscreen canvas) so the box's
-  // top/side/back faces read as "the color of the product" instead of a separately hand-picked
-  // swatch color that may not actually match the photo.
-  function computeAverageColor(img) {
-    try {
-      const size = 16;
-      const canvas = document.createElement('canvas');
-      canvas.width = size;
-      canvas.height = size;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, size, size);
-      const data = ctx.getImageData(0, 0, size, size).data;
-      let r = 0, g = 0, b = 0, count = 0;
-      for (let i = 0; i < data.length; i += 4) {
-        r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
-      }
-      return `rgb(${Math.round(r / count)}, ${Math.round(g / count)}, ${Math.round(b / count)})`;
-    } catch (e) {
-      return null;
-    }
-  }
-
   function addImagePanelsToScene() {
     panelMeshMap = {};
     (project.imagePanels || []).forEach(panel => {
-      const texture = new THREE.TextureLoader().load(panel.dataUrl);
+      const texture = new THREE.TextureLoader().load(panel.dataUrl, () => markDirty());
       // Mirrors the image via UV repeat/offset rather than negating the mesh's scale -- scaling
       // the mesh itself would also flip the winding order (messing with the DoubleSide backface)
       // and would have to be un-done everywhere else that reads panel.width/height as plain
@@ -1520,10 +1596,15 @@ const Viewer3D = (() => {
     const file = e.target.files[0];
     if (!file || !project) return;
     const reader = new FileReader();
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
+      // Downscaled before it's ever stored, same as every swatch photo -- this was the one
+      // remaining upload path that kept a full-resolution original, and every one of those
+      // rode along inside every project save and (until snapshotProject was fixed) every undo
+      // snapshot the grid took.
+      const dataUrl = await downscaleImageDataUrl(evt.target.result);
       const panel = {
         id: uid('panel'),
-        dataUrl: evt.target.result,
+        dataUrl,
         x: project.footprintWidth / 2,
         y: project.footprintDepth,
         heightOffGround: 0,
@@ -1798,16 +1879,18 @@ const Viewer3D = (() => {
   // Mirrors addStackMeshes: the base column, then any toppers riding on top of it, offset within
   // the stack's own footprint and rotated rigidly with it -- same transform as everywhere else
   // toppers are positioned in this file.
-  async function buildArStackMeshes(exportScene, stack, centerGridX, centerGridY, angleDeg) {
-    const baseHeight = await buildArItemColumn(exportScene, stack.items, centerGridX, centerGridY, angleDeg, 0, stack.footprintW, stack.footprintD);
+  async function buildArStackMeshes(exportScene, stack, centerGridX, centerGridY, positionAngle) {
+    // Same position-vs-facing split as the live addStackMeshes.
+    const faceAngle = stackFacingAngle(stack, positionAngle);
+    const baseHeight = await buildArItemColumn(exportScene, stack.items, centerGridX, centerGridY, faceAngle, 0, stack.footprintW, stack.footprintD);
     for (const topper of (stack.toppers || [])) {
       const offsetX = topper.dx + topper.footprintW / 2 - stack.footprintW / 2;
       const offsetY = topper.dy + topper.footprintD / 2 - stack.footprintD / 2;
-      const a = (angleDeg * Math.PI) / 180;
+      const a = (positionAngle * Math.PI) / 180;
       const cos = Math.cos(a), sin = Math.sin(a);
       const topperCenterX = centerGridX + offsetX * cos - offsetY * sin;
       const topperCenterY = centerGridY + offsetX * sin + offsetY * cos;
-      await buildArItemColumn(exportScene, topper.items, topperCenterX, topperCenterY, angleDeg, baseHeight, topper.footprintW, topper.footprintD);
+      await buildArItemColumn(exportScene, topper.items, topperCenterX, topperCenterY, positionAngle, baseHeight, topper.footprintW, topper.footprintD);
     }
   }
 
@@ -1842,7 +1925,7 @@ const Viewer3D = (() => {
     exportScene.add(scaleForAr(floor));
 
     for (const stack of project.stacks.filter(s => !s.groupId)) {
-      await buildArStackMeshes(exportScene, stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, stack.facingFlipped ? 180 : 0);
+      await buildArStackMeshes(exportScene, stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, 0);
     }
     for (const group of project.groups) {
       for (const { stack, worldCenter } of Grid.getGroupMembers(group)) {

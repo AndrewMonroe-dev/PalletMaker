@@ -97,12 +97,25 @@
         }
       }
     }
+    // 3D image panels (project.imagePanels) were the one remaining place a photo was stored at
+    // full original size -- they're part of every project snapshot the grid's undo stack copies
+    // and every save, so they matter just as much as swatch photos.
+    for (const proj of appState.projects) {
+      for (const panel of (proj.imagePanels || [])) {
+        const image = await recompressField(panel.dataUrl);
+        if (image.changed) {
+          panel.dataUrl = image.value;
+          swatchesTouched++;
+        }
+      }
+    }
     saveState(appState);
     ItemTypes.refresh();
     Cases.refresh();
     Grid.refresh();
+    Viewer3D.refresh();
     alert(imagesProcessed > 0
-      ? `Recompressed ${imagesProcessed} photo${imagesProcessed === 1 ? '' : 's'} across ${swatchesTouched} swatch${swatchesTouched === 1 ? '' : 'es'}. ${skippedAlreadySmall} photo${skippedAlreadySmall === 1 ? '' : 's'} ${skippedAlreadySmall === 1 ? 'was' : 'were'} already small enough and left alone.`
+      ? `Recompressed ${imagesProcessed} photo${imagesProcessed === 1 ? '' : 's'} across ${swatchesTouched} swatch${swatchesTouched === 1 ? '' : 'es'}/panel${swatchesTouched === 1 ? '' : 's'}. ${skippedAlreadySmall} photo${skippedAlreadySmall === 1 ? '' : 's'} ${skippedAlreadySmall === 1 ? 'was' : 'were'} already small enough and left alone.`
       : `Nothing to recompress -- every photo (${skippedAlreadySmall}) is already a small size.`);
   });
 

@@ -127,16 +127,35 @@ const FileSync = (() => {
   // Mirrors whatever's in appState out to the connected file. Silent no-op if never connected or
   // permission has lapsed -- localStorage (via storage.js's own saveState) always remains the
   // primary, always-on save; this is strictly additive.
-  async function write(state) {
-    if (status !== 'connected' || !fileHandle) return;
-    try {
-      const writable = await fileHandle.createWritable();
-      await writable.write(JSON.stringify(state, null, 2));
-      await writable.close();
-    } catch (e) {
-      console.error('FileSync write failed', e);
-      setStatus('needs-permission');
-    }
+  // Accepts either the app state object or its already-serialized JSON string (storage.js passes
+  // the string it just built, so the state isn't stringified twice per save).
+  //
+  // Writes are serialized through one chain: createWritable() opens a fresh temp file per call
+  // and the LAST close() wins, so two overlapping writes (an explicit save landing while the
+  // 4-second autosave's write was still in flight) could finish out of order and leave the older
+  // content on disk. Only the most recent pending payload is kept while a write is running --
+  // intermediate states have no value on disk, only the latest one does.
+  let writeChain = Promise.resolve();
+  let pendingPayload = null;
+
+  function write(stateOrJson) {
+    if (status !== 'connected' || !fileHandle) return Promise.resolve();
+    pendingPayload = typeof stateOrJson === 'string' ? stateOrJson : JSON.stringify(stateOrJson);
+    writeChain = writeChain.then(async () => {
+      if (pendingPayload === null) return;
+      const payload = pendingPayload;
+      pendingPayload = null;
+      if (status !== 'connected' || !fileHandle) return;
+      try {
+        const writable = await fileHandle.createWritable();
+        await writable.write(payload);
+        await writable.close();
+      } catch (e) {
+        console.error('FileSync write failed', e);
+        setStatus('needs-permission');
+      }
+    });
+    return writeChain;
   }
 
   return { init, chooseFile, reconnect, forget, write, isSupported: () => supported };
