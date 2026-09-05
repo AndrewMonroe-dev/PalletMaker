@@ -70,7 +70,6 @@ const Grid = (() => {
     document.getElementById('btnImportProject').addEventListener('change', handleImportProject);
     document.getElementById('btnUndo').addEventListener('click', undo);
     document.getElementById('btnRedo').addEventListener('click', redo);
-    document.getElementById('btnPrintGrid').addEventListener('click', handlePrintGrid);
     document.getElementById('btnPrintSpecSheet').addEventListener('click', handlePrintSpecSheet);
     document.getElementById('btnZoomIn').addEventListener('click', () => setZoom(zoomLevel + ZOOM_STEP));
     document.getElementById('btnZoomOut').addEventListener('click', () => setZoom(zoomLevel - ZOOM_STEP));
@@ -325,7 +324,6 @@ const Grid = (() => {
     undoBtn.disabled = undoStack.length === 0;
     redoBtn.disabled = redoStack.length === 0;
 
-    document.getElementById('btnPrintGrid').classList.toggle('hidden', !project);
     document.getElementById('btnPrintSpecSheet').classList.toggle('hidden', !project);
   }
 
@@ -3372,62 +3370,6 @@ const Grid = (() => {
     const img = document.querySelector('img');
     const go = () => { window.focus(); window.print(); };
     if (!img || img.complete) go(); else img.addEventListener('load', go);
-  <\/script>
-</body>
-</html>`);
-    printWindow.document.close();
-  }
-
-  // ---- Print ----
-
-  // Prints the current top-down floor layout with the item tally alongside it on the right, so
-  // the printout doubles as a pick list -- "every item in the display, how many of each."
-  function handlePrintGrid() {
-    if (!project) return;
-
-    const canvas = document.getElementById('gridCanvas');
-    const canvasClone = canvas.cloneNode(true);
-    canvasClone.querySelectorAll('.grid-drag-preview').forEach(el => el.remove());
-    canvasClone.removeAttribute('id'); // avoid a duplicate #gridCanvas id in the new document
-
-    const title = `${project.name || 'Pallet'} - Floor Plan`;
-    const tallyHtml = buildTallyTableHtml(computeTally());
-
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) {
-      alert('Your browser blocked the print window. Allow pop-ups for this site and try again.');
-      return;
-    }
-
-    printWindow.document.write(`<!DOCTYPE html>
-<html>
-<head>
-<title>${escapeHtml(title)}</title>
-<link rel="stylesheet" href="${new URL('css/style.css', window.location.href).href}">
-<style>
-  html, body { margin: 0; background: var(--bg, #14161a); }
-  body { padding: 24px; display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
-  h1 { font-size: 1.1rem; margin: 0 0 12px; color: var(--text, #e8e9ec); }
-  .print-tally-wrap { min-width: 320px; }
-  .print-tally-empty { color: var(--text-dim); font-size: 0.85rem; }
-  @media print {
-    body { padding: 0; }
-  }
-</style>
-</head>
-<body>
-  <div>
-    <h1>${escapeHtml(title)} -- ${project.footprintWidth}"W x ${project.footprintDepth}"D</h1>
-    <div class="grid-canvas" style="position:relative;flex-shrink:0;width:${canvas.style.width};height:${canvas.style.height};">${canvasClone.innerHTML}</div>
-  </div>
-  <div class="print-tally-wrap">
-    <h1>Items in this display</h1>
-    ${tallyHtml}
-  </div>
-  <script>
-    const link = document.querySelector('link[rel="stylesheet"]');
-    const go = () => { window.focus(); window.print(); };
-    if (link.sheet) go(); else link.addEventListener('load', go);
   <\/script>
 </body>
 </html>`);
