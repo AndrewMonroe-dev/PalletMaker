@@ -2175,62 +2175,87 @@ const Viewer3D = (() => {
   // the front (azimuth 0 is +Z, the side the product photos face), slightly above, key light also
   // from the front so the faces are fully lit, framed on the placed cases rather than the whole
   // floor, at print resolution. Every view/light setting it touches is put back afterwards.
+  // Waits for a set of promises, but never longer than ms -- a photo whose decode callback never
+  // fires (corrupt data, browser quirk) must not be able to hang the caller forever.
+  function settleWithTimeout(promises, ms) {
+    return Promise.race([
+      Promise.all(promises),
+      new Promise(resolve => setTimeout(resolve, ms))
+    ]);
+  }
+
   async function captureSnapshot() {
     if (typeof THREE === 'undefined') return null;
     project = Grid.getActiveProject();
     if (!project) return null;
-    buildScene();
+    try {
+      buildScene();
+    } catch (e) {
+      console.error('Spec sheet: building the 3D scene failed.', e);
+      return null;
+    }
     // Photo faces are async textures; on a fresh session none have decoded yet at this point.
-    await Promise.all(Array.from(textureReady.values()));
+    // Bounded so one stuck photo can't hang the whole spec sheet indefinitely.
+    await settleWithTimeout(Array.from(textureReady.values()), 4000);
 
+    if (!renderer || !scene || !camera || !dirLight) return null;
     const saved = { azimuth, elevation, radius, orbitTargetX, orbitTargetZ, lightAzimuth, lightElevation, intensity: dirLight.intensity };
     const savedSize = new THREE.Vector2();
     renderer.getSize(savedSize);
 
-    // Frame what's actually on the floor. Grouped stacks live at their group-rotated centers.
-    const centers = [];
-    project.stacks.filter(s => !s.groupId).forEach(s => centers.push({ x: s.x + s.footprintW / 2, y: s.y + s.footprintD / 2, r: Math.max(s.footprintW, s.footprintD) / 2, h: computeStackTotalHeight(s) }));
-    project.groups.forEach(g => Grid.getGroupMembers(g).forEach(({ stack, worldCenter }) => centers.push({ x: worldCenter.x, y: worldCenter.y, r: Math.max(stack.footprintW, stack.footprintD) / 2, h: computeStackTotalHeight(stack) })));
-    let extent = Math.max(project.footprintWidth, project.footprintDepth);
-    let cx = project.footprintWidth / 2, cy = project.footprintDepth / 2, tallest = 20;
-    if (centers.length) {
-      const minX = Math.min(...centers.map(c => c.x - c.r)), maxX = Math.max(...centers.map(c => c.x + c.r));
-      const minY = Math.min(...centers.map(c => c.y - c.r)), maxY = Math.max(...centers.map(c => c.y + c.r));
-      cx = (minX + maxX) / 2; cy = (minY + maxY) / 2;
-      tallest = Math.max(...centers.map(c => c.h));
-      extent = Math.max(maxX - minX, maxY - minY, tallest);
+    // Every mutation below is restored in `finally` -- a thrown error partway through (a bad
+    // project shape, a WebGL error) must never leave the live 3D tab's camera/light/renderer
+    // stuck at spec-sheet framing, which is what made the app look frozen: the camera/renderer
+    // stayed set to the still frame's size/angle while the interactive render loop kept running.
+    try {
+      // Frame what's actually on the floor. Grouped stacks live at their group-rotated centers.
+      const centers = [];
+      project.stacks.filter(s => !s.groupId).forEach(s => centers.push({ x: s.x + s.footprintW / 2, y: s.y + s.footprintD / 2, r: Math.max(s.footprintW, s.footprintD) / 2, h: computeStackTotalHeight(s) }));
+      project.groups.forEach(g => Grid.getGroupMembers(g).forEach(({ stack, worldCenter }) => centers.push({ x: worldCenter.x, y: worldCenter.y, r: Math.max(stack.footprintW, stack.footprintD) / 2, h: computeStackTotalHeight(stack) })));
+      let extent = Math.max(project.footprintWidth, project.footprintDepth);
+      let cx = project.footprintWidth / 2, cy = project.footprintDepth / 2, tallest = 20;
+      if (centers.length) {
+        const minX = Math.min(...centers.map(c => c.x - c.r)), maxX = Math.max(...centers.map(c => c.x + c.r));
+        const minY = Math.min(...centers.map(c => c.y - c.r)), maxY = Math.max(...centers.map(c => c.y + c.r));
+        cx = (minX + maxX) / 2; cy = (minY + maxY) / 2;
+        tallest = Math.max(...centers.map(c => c.h));
+        extent = Math.max(maxX - minX, maxY - minY, tallest);
+      }
+
+      azimuth = 0;
+      elevation = Math.PI / 9; // 20 degrees above: front-on, with just enough top to read depth
+      orbitTargetX = toSceneX(cx);
+      orbitTargetZ = toSceneZ(cy);
+      // Height counts double in the extent: at a 20-degree elevation the vertical span of the
+      // display is what runs out of frame first, not its width.
+      extent = Math.max(extent, tallest * 2);
+      radius = extent * 1.2 + 30;
+      // Key light nearly level with the camera so it lands on the fronts, not the tops.
+      lightAzimuth = 0;
+      lightElevation = 15;
+      dirLight.intensity = 1.5;
+
+      const W = 1600, H = 1000;
+      renderer.setSize(W, H, false);
+      camera.aspect = W / H;
+      camera.updateProjectionMatrix();
+      updateLightPosition();
+      updateCameraPosition();
+      renderer.render(scene, camera);
+      return renderer.domElement.toDataURL('image/png');
+    } catch (e) {
+      console.error('Spec sheet: rendering the 3D snapshot failed.', e);
+      return null;
+    } finally {
+      ({ azimuth, elevation, radius, orbitTargetX, orbitTargetZ, lightAzimuth, lightElevation } = saved);
+      dirLight.intensity = saved.intensity;
+      renderer.setSize(savedSize.x, savedSize.y, false);
+      camera.aspect = savedSize.x / savedSize.y;
+      camera.updateProjectionMatrix();
+      updateLightPosition();
+      updateCameraPosition();
+      markDirty();
     }
-
-    azimuth = 0;
-    elevation = Math.PI / 9; // 20 degrees above: front-on, with just enough top to read depth
-    orbitTargetX = toSceneX(cx);
-    orbitTargetZ = toSceneZ(cy);
-    // Height counts double in the extent: at a 20-degree elevation the vertical span of the
-    // display is what runs out of frame first, not its width.
-    extent = Math.max(extent, tallest * 2);
-    radius = extent * 1.2 + 30;
-    // Key light nearly level with the camera so it lands on the fronts, not the tops.
-    lightAzimuth = 0;
-    lightElevation = 15;
-    dirLight.intensity = 1.5;
-
-    const W = 1600, H = 1000;
-    renderer.setSize(W, H, false);
-    camera.aspect = W / H;
-    camera.updateProjectionMatrix();
-    updateLightPosition();
-    updateCameraPosition();
-    renderer.render(scene, camera);
-    const dataUrl = renderer.domElement.toDataURL('image/png');
-
-    ({ azimuth, elevation, radius, orbitTargetX, orbitTargetZ, lightAzimuth, lightElevation } = saved);
-    dirLight.intensity = saved.intensity;
-    renderer.setSize(savedSize.x, savedSize.y, false);
-    camera.aspect = savedSize.x / savedSize.y;
-    camera.updateProjectionMatrix();
-    updateLightPosition();
-    updateCameraPosition();
-    return dataUrl;
   }
 
   return { init, refresh, stopRenderLoop, getStackHeight, captureSnapshot };

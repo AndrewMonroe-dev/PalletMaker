@@ -3238,7 +3238,10 @@ const Grid = (() => {
     stacks.forEach(s => {
       const w = s.stack.footprintW, d = s.stack.footprintD;
       const entry = legendByKey[s.primary.key];
-      const totalCases = s.skus.reduce((sum, k) => sum + k.cases, 0);
+      // Only the letter actually printed on the box counts toward "N high" -- summing every SKU
+      // physically in the column (e.g. a topper that isn't quite the same product as the case
+      // below it) inflated the number with cases of a product the box doesn't even show.
+      const totalCases = s.primary.cases;
       const small = Math.min(w, d);
       // Letter in the upper half, count in the lower half, sized off the box's short side so the
       // two never collide on a squat case. Both get a dark outline so they read on any fill color.
@@ -3280,11 +3283,27 @@ const Grid = (() => {
     }
     printWindow.document.write('<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;padding:24px;">Building the sheet...</body></html>');
 
-    const stacks = collectSpecSheetStacks();
-    const legend = buildSpecSheetLegend(stacks);
-    const map = buildSpecSheetMapSvg(stacks, legend);
-    const legendHtml = buildSpecSheetLegendHtml(legend);
-    const snapshotUrl = await Viewer3D.captureSnapshot();
+    let stacks, legend, map, legendHtml, snapshotUrl;
+    try {
+      stacks = collectSpecSheetStacks();
+      legend = buildSpecSheetLegend(stacks);
+      map = buildSpecSheetMapSvg(stacks, legend);
+      legendHtml = buildSpecSheetLegendHtml(legend);
+      // Never let a stuck 3D snapshot leave the popup on "Building the sheet..." forever --
+      // captureSnapshot already bounds its own texture wait, but this is the last line of defense.
+      snapshotUrl = await Promise.race([
+        Viewer3D.captureSnapshot(),
+        new Promise(resolve => setTimeout(() => resolve(null), 8000))
+      ]);
+    } catch (e) {
+      console.error('Spec sheet generation failed.', e);
+      printWindow.document.open();
+      printWindow.document.write(`<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;padding:24px;">
+        Something went wrong building the spec sheet. Check the browser console for details, or close this window and try again.
+      </body></html>`);
+      printWindow.document.close();
+      return;
+    }
     const title = project.name || 'Display';
     // A wide display gets the full page width with the legend in columns underneath; a tall one
     // sits beside a single-column legend. Either way the map is the majority of the page.
