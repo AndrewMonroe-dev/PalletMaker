@@ -3346,10 +3346,12 @@ const Grid = (() => {
   .legend-empty { color: #555; }
   .photo { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; }
   .photo img { max-width: 100%; max-height: 100%; border: 2px solid #111; }
-  @media print { body { padding: 0; } .page { height: calc(100vh - 4px); } }
+  #closeSheetBtn { position: fixed; top: 6px; right: 8px; font: 12px Arial, sans-serif; padding: 4px 10px; cursor: pointer; }
+  @media print { body { padding: 0; } .page { height: calc(100vh - 4px); } #closeSheetBtn { display: none; } }
 </style>
 </head>
 <body>
+  <button id="closeSheetBtn" type="button" onclick="window.close()" title="If the print dialog didn't close this window on its own, use this.">Close</button>
   <div class="page">
     <h1>${escapeHtml(title)}</h1>
     <p class="sub">Build sheet -- floor space ${project.footprintWidth}" wide x ${project.footprintDepth}" deep -- printed ${new Date().toLocaleDateString()}</p>
@@ -3367,6 +3369,11 @@ const Grid = (() => {
     <div class="photo"><img src="${snapshotUrl}" alt="3D view of the finished display"></div>
   </div>` : ''}
   <script>
+    // Some browsers treat the print dialog as an OS-level modal that can block OTHER native
+    // popups -- a <select> dropdown's own list included -- anywhere else in the browser until it's
+    // dismissed, even in a different tab. Closing this window the moment the dialog is dismissed
+    // (print or cancel) means it can never linger and cause that.
+    window.addEventListener('afterprint', () => window.close());
     const img = document.querySelector('img');
     const go = () => { window.focus(); window.print(); };
     if (!img || img.complete) go(); else img.addEventListener('load', go);

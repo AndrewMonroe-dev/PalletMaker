@@ -1916,13 +1916,16 @@ const Viewer3D = (() => {
   img { max-width: 900px; width: 100%; height: auto; border: 1px solid var(--border); }
   .print-tally-wrap { min-width: 320px; }
   .print-tally-empty { color: var(--text-dim); font-size: 0.85rem; }
+  #closeSheetBtn { position: fixed; top: 6px; right: 8px; font: 12px Arial, sans-serif; padding: 4px 10px; cursor: pointer; }
   @media print {
     body { padding: 0; }
     img { max-width: 65%; }
+    #closeSheetBtn { display: none; }
   }
 </style>
 </head>
 <body>
+  <button id="closeSheetBtn" type="button" onclick="window.close()" title="If the print dialog didn't close this window on its own, use this.">Close</button>
   <div>
     <h1>${escapeHtml(title)}</h1>
     <img src="${dataUrl}" alt="${escapeHtml(title)}">
@@ -1932,6 +1935,10 @@ const Viewer3D = (() => {
     ${tallyHtml}
   </div>
   <script>
+    // See grid.js's handlePrintSpecSheet for why: the print dialog can be an OS-level modal that
+    // blocks other native popups (a <select>'s own dropdown list included) elsewhere in the
+    // browser until dismissed. Closing this window right after means it can't linger and cause that.
+    window.addEventListener('afterprint', () => window.close());
     const link = document.querySelector('link[rel="stylesheet"]');
     const img = document.querySelector('img');
     let ready = 0;
