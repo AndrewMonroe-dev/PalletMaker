@@ -3114,157 +3114,165 @@ const Grid = (() => {
   }
 
   // ---- Spec sheet ----
-  // A single build-ready document: page 1 is a full-page landscape schematic -- the floor plan
-  // with each SKU's actual name labeled beside it, connected by an arrow to every case it occupies
-  // -- and page 2 backs it up with a 3D reference view, a plain contents list, and the item tally.
-  // Distinct from the plain Print button below (just the floor plan + tally) -- this is meant to
-  // be handed to (or printed for) whoever is actually building the display in a store, with no
-  // screen required.
+  // A build sheet for whoever physically sets the display up in a store -- assumed to be a brand
+  // new employee with no context. Page 1 is a color-coded map: every case on the floor is a box in
+  // its SKU's color with a big letter and how many cases high it stacks, and a legend beside it says
+  // what each letter is and how many cases to pull. Page 2 is just the 3D picture. Deliberately
+  // no arrows, no numbered legend, no units, no dimensions, no cost -- every one of those made an
+  // earlier version unreadable at real display sizes. The plain Print buttons keep the full tally.
+  //
+  // Units placed on top of a case are always that same case's product (an opened case on
+  // display), so the sheet never draws or lists them -- they're folded into the case count.
 
-  function describeItemLabel(item) {
+  // Stable, high-contrast fills that survive a cheap color printer. Picked so adjacent letters
+  // never share a hue family; wraps past 14 SKUs.
+  const SPEC_SHEET_COLORS = [
+    '#e53935', '#1e88e5', '#43a047', '#fb8c00', '#8e24aa', '#00acc1', '#fdd835',
+    '#6d4c41', '#d81b60', '#3949ab', '#7cb342', '#f4511e', '#00897b', '#757575'
+  ];
+
+  function specSheetLetter(index) {
+    // A..Z, then AA, AB, ... -- a 20-year-old reads "AB" fine; "27" next to a stack count doesn't.
+    let n = index, s = '';
+    do { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; } while (n >= 0);
+    return s;
+  }
+
+  // The SKU an item belongs to, and how many cases it represents. A case item is exactly one case;
+  // a loose unit is 1/unitsPerCase of one. Both roll up to the same SKU key so the units on top of a
+  // case count toward that case's product rather than showing up as a separate line.
+  function specSheetItemSku(item) {
     if (item.kind === 'case') {
       const c = Cases.getCase(item.caseId);
-      return c ? c.name : '(deleted case)';
+      const it = c ? ItemTypes.getItemType(c.itemTypeId) : null;
+      if (!c || !it) return { key: `missing-${item.caseId}`, name: '(deleted case)', caseFraction: 1 };
+      return { key: `sku-${it.id}-${c.swatchId}`, name: c.name, caseFraction: 1 };
     }
     const it = ItemTypes.getItemType(item.itemTypeId);
+    if (!it) return { key: `missing-${item.itemTypeId}`, name: '(deleted item)', caseFraction: 1 };
     const sw = resolveSwatch(item.itemTypeId, item.swatchId);
-    return `${it ? it.name : '(deleted item)'} - ${sw ? sw.name : '?'}`;
+    // Prefer the case's name when one exists for this SKU -- that's what the stockroom is labeled
+    // with -- and only fall back to "Item - Swatch" for a product that never got a case built.
+    const namedCase = Cases.getAll().find(c => c.itemTypeId === it.id && c.swatchId === item.swatchId);
+    const name = namedCase ? namedCase.name : `${it.name} - ${sw ? sw.name : '?'}`;
+    return { key: `sku-${it.id}-${item.swatchId}`, name, caseFraction: it.unitsPerCase > 0 ? 1 / it.unitsPerCase : 1 };
   }
 
-  // Rolls a stack's base column AND its toppers together into one count per SKU -- units always
-  // ride on top of a case in this app, so which layer something physically sits in isn't worth
-  // stating; what matters is whether the units on top add up to another whole case (converted the
-  // same way the floor-wide tally does) or stay a partial one. Returns one row per distinct SKU in
-  // the stack: `label` is the bare product name (for the schematic's callouts), `text` is the
-  // case-counted description (for the plain list on page 2).
-  function tallyStackContents(stack) {
-    const allItems = [...stack.items, ...(stack.toppers || []).flatMap(t => t.items)];
-    const bySku = {};
-    function ensureRow(key, label, unitsPerCase) {
-      if (!bySku[key]) bySku[key] = { label, totalUnits: 0, unitsPerCase };
-      return bySku[key];
-    }
-    allItems.forEach(item => {
-      if (item.kind === 'case') {
-        const c = Cases.getCase(item.caseId);
-        const it = c ? ItemTypes.getItemType(c.itemTypeId) : null;
-        if (!c || !it) { ensureRow(`missing-${item.caseId}`, '(deleted case)', 0).totalUnits += 1; return; }
-        const sw = it.palette.find(s => s.id === c.swatchId);
-        const row = ensureRow(`sku-${it.id}-${c.swatchId}`, describeItemLabel(item), it.unitsPerCase);
-        row.totalUnits += c.rows * c.cols * c.layers;
-      } else {
-        const it = ItemTypes.getItemType(item.itemTypeId);
-        if (!it) { ensureRow(`missing-${item.itemTypeId}`, '(deleted item type)', 0).totalUnits += 1; return; }
-        const row = ensureRow(`sku-${it.id}-${item.swatchId}`, describeItemLabel(item), it.unitsPerCase);
-        row.totalUnits += 1;
-      }
-    });
-    return Object.values(bySku).map(row => {
-      if (!row.unitsPerCase) return { label: row.label, text: `${row.totalUnits}x ${row.label}` };
-      const cases = Math.floor(row.totalUnits / row.unitsPerCase);
-      const loose = row.totalUnits % row.unitsPerCase;
-      const parts = [];
-      if (cases > 0) parts.push(`${cases} case${cases > 1 ? 's' : ''} of ${row.label}`);
-      if (loose > 0) parts.push(`${loose} loose unit${loose > 1 ? 's' : ''} of ${row.label}`);
-      return { label: row.label, text: parts.join(' + ') || `0x ${row.label}` };
-    });
-  }
-
-  function describeStackContents(stack) {
-    return tallyStackContents(stack).map(r => r.text).join(', ');
-  }
-
-  // Every top-level stack (grouped or not), with its floor-center in inches -- the shared list the
-  // schematic's callouts and page 2's plain contents list are both built from.
+  // Every top-level stack (grouped or not) with its floor center and rotation, plus a per-SKU case
+  // count for the whole column (base + everything on top). Partial cases round UP: a case that's
+  // been opened to put units on display is still a case someone has to pull from the back.
   function collectSpecSheetStacks() {
     const list = [];
+    function add(stack, cx, cy, angle) {
+      const perSku = {};
+      [...stack.items, ...(stack.toppers || []).flatMap(t => t.items)].forEach(item => {
+        const sku = specSheetItemSku(item);
+        if (!perSku[sku.key]) perSku[sku.key] = { key: sku.key, name: sku.name, cases: 0 };
+        perSku[sku.key].cases += sku.caseFraction;
+      });
+      const skus = Object.values(perSku).map(s => ({ ...s, cases: Math.ceil(s.cases - 1e-9) }))
+        .sort((a, b) => b.cases - a.cases);
+      if (skus.length === 0) return;
+      list.push({ stack, cx, cy, angle, skus, primary: skus[0] });
+    }
     project.stacks.filter(s => !s.groupId).forEach(stack => {
-      list.push({ stack, cx: stack.x + stack.footprintW / 2, cy: stack.y + stack.footprintD / 2 });
+      add(stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, stack.angle || 0);
     });
     project.groups.forEach(group => {
       getGroupMembers(group).forEach(({ stack, worldCenter }) => {
-        list.push({ stack, cx: worldCenter.x, cy: worldCenter.y });
+        // A member's own facing flip (stackFacingAngle in viewer3d) is a 180 turn -- the same
+        // rectangle either way, so the group's layout angle is all the map needs.
+        add(stack, worldCenter.x, worldCenter.y, group.angle);
       });
     });
     list.sort((a, b) => (a.cy - b.cy) || (a.cx - b.cx));
     return list;
   }
 
-  // One entry per distinct SKU on the floor, carrying every physical stack it occupies -- so a SKU
-  // placed in three different spots gets one name label with three arrows, not three labels.
-  function buildCalloutGroups(stackPlacements) {
-    const bySku = {};
-    stackPlacements.forEach(({ stack, cx, cy }) => {
-      tallyStackContents(stack).forEach(row => {
-        if (!bySku[row.label]) bySku[row.label] = { label: row.label, targets: [] };
-        bySku[row.label].targets.push({ stackId: stack.id, cx, cy });
-      });
-    });
-    // Left/right split (by which half of the floor a SKU's stacks sit on, on average) keeps most
-    // arrows short and uncrossed rather than every label competing for one side.
-    const midX = project.footprintWidth / 2;
-    const left = [], right = [];
-    Object.values(bySku).forEach(group => {
-      const avgX = group.targets.reduce((sum, t) => sum + t.cx, 0) / group.targets.length;
-      (avgX < midX ? left : right).push(group);
-    });
-    return { left, right };
+  // One legend entry per SKU, lettered in the order a reader meets them on the map (top-left
+  // first), with the floor-wide case total.
+  function buildSpecSheetLegend(stacks) {
+    const byKey = {};
+    const order = [];
+    stacks.forEach(s => s.skus.forEach(sku => {
+      if (!byKey[sku.key]) { byKey[sku.key] = { key: sku.key, name: sku.name, cases: 0, stacks: 0 }; order.push(sku.key); }
+      byKey[sku.key].cases += sku.cases;
+      byKey[sku.key].stacks += 1;
+    }));
+    return order.map((key, i) => ({
+      ...byKey[key],
+      letter: specSheetLetter(i),
+      color: SPEC_SHEET_COLORS[i % SPEC_SHEET_COLORS.length]
+    }));
   }
 
-  function buildCalloutColumnHtml(groups, side) {
-    return groups.map((g, i) => {
-      const targets = g.targets.map(t => t.stackId).join('|');
-      return `<div class="callout-label" data-side="${side}" data-targets="${escapeHtml(targets)}">${escapeHtml(g.label)}</div>`;
-    }).join('');
+  // The map as inline SVG in floor inches, cropped to what's actually placed (plus a margin) so a
+  // small display on a big floor still fills the page. Rotated cases are drawn rotated; their
+  // letter stays upright so it's readable from the front of the page.
+  function buildSpecSheetMapSvg(stacks, legend) {
+    const legendByKey = Object.fromEntries(legend.map(l => [l.key, l]));
+    const pts = [];
+    stacks.forEach(s => pts.push(...rotatedCorners(s.cx, s.cy, s.stack.footprintW / 2, s.stack.footprintD / 2, s.angle)));
+    const pallets = project.pallets.filter(p => p.visible);
+    pallets.forEach(p => pts.push(...rotatedCorners(p.centerX, p.centerY, PALLET_W / 2, PALLET_D / 2, p.angle || 0)));
+    if (pts.length === 0) pts.push({ x: 0, y: 0 }, { x: project.footprintWidth, y: project.footprintDepth });
+
+    const margin = 6;
+    const minX = Math.min(...pts.map(p => p.x)) - margin;
+    const minY = Math.min(...pts.map(p => p.y)) - margin;
+    const maxX = Math.max(...pts.map(p => p.x)) + margin;
+    const maxY = Math.max(...pts.map(p => p.y)) + margin;
+    const vw = maxX - minX, vh = maxY - minY;
+
+    const parts = [];
+    // Floor edge, so "against the wall / at the edge" placements read correctly. Clipped by the
+    // viewBox whenever the display is much smaller than the floor.
+    parts.push(`<rect x="0" y="0" width="${project.footprintWidth}" height="${project.footprintDepth}" fill="none" stroke="#9e9e9e" stroke-width="0.4" stroke-dasharray="2 1.5"/>`);
+    pallets.forEach(p => {
+      parts.push(`<rect x="${p.centerX - PALLET_W / 2}" y="${p.centerY - PALLET_D / 2}" width="${PALLET_W}" height="${PALLET_D}" transform="rotate(${p.angle || 0} ${p.centerX} ${p.centerY})" fill="none" stroke="#616161" stroke-width="0.6" stroke-dasharray="1.5 1"/>`);
+      parts.push(`<text x="${p.centerX}" y="${p.centerY - PALLET_D / 2 + 3}" text-anchor="middle" font-size="2.6" fill="#616161">PALLET</text>`);
+    });
+    stacks.forEach(s => {
+      const w = s.stack.footprintW, d = s.stack.footprintD;
+      const entry = legendByKey[s.primary.key];
+      const totalCases = s.skus.reduce((sum, k) => sum + k.cases, 0);
+      const small = Math.min(w, d);
+      // Letter in the upper half, count in the lower half, sized off the box's short side so the
+      // two never collide on a squat case. Both get a dark outline so they read on any fill color.
+      const letterSize = Math.max(2.5, small * 0.42);
+      const countSize = Math.max(1.6, small * 0.22);
+      parts.push(`<rect x="${s.cx - w / 2}" y="${s.cy - d / 2}" width="${w}" height="${d}" transform="rotate(${s.angle} ${s.cx} ${s.cy})" fill="${entry.color}" stroke="#111" stroke-width="0.35"/>`);
+      parts.push(`<text x="${s.cx}" y="${s.cy - d * 0.08}" text-anchor="middle" dominant-baseline="middle" font-size="${letterSize}" font-weight="700" fill="#fff" stroke="#111" stroke-width="${letterSize * 0.06}" paint-order="stroke">${entry.letter}</text>`);
+      parts.push(`<text x="${s.cx}" y="${s.cy + d * 0.3}" text-anchor="middle" dominant-baseline="middle" font-size="${countSize}" font-weight="700" fill="#fff" stroke="#111" stroke-width="${countSize * 0.08}" paint-order="stroke">${totalCases} high</text>`);
+    });
+
+    return `<svg viewBox="${minX} ${minY} ${vw} ${vh}" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif" style="width:100%;height:100%;">${parts.join('')}</svg>`;
   }
 
-  // Renders the floor plan fresh at a print-appropriate scale, entirely independent of whatever
-  // zoom/pan the live Grid tab happens to be at -- a detached element built with the same box
-  // builders the live canvas uses (buildStackEl etc.), never inserted into the real #gridCanvas, so
-  // generating this can't disturb the on-screen view or its `scale`.
-  function buildPrintFloorPlanHtml() {
-    const savedScale = scale;
-    const maxW = 800, maxH = 560;
-    scale = Math.min(maxW / project.footprintWidth, maxH / project.footprintDepth);
-
-    const temp = document.createElement('div');
-    project.pallets.filter(p => p.visible).forEach(pallet => temp.appendChild(buildPalletEl(pallet)));
-    project.stacks.filter(s => !s.groupId).forEach(stack => {
-      temp.appendChild(buildStackEl(stack));
-      (stack.toppers || []).forEach(t => temp.appendChild(buildTopperEl(stack, t)));
-    });
-    project.groups.forEach(group => {
-      getGroupMembers(group).forEach(({ stack, worldCenter }) => {
-        temp.appendChild(buildGroupMemberEl(group, stack, worldCenter));
-        (stack.toppers || []).forEach(t => temp.appendChild(buildGroupTopperEl(group, stack, worldCenter, t)));
-      });
-    });
-
-    const result = {
-      html: temp.innerHTML,
-      width: project.footprintWidth * scale,
-      height: project.footprintDepth * scale
-    };
-    scale = savedScale;
-    return result;
+  function buildSpecSheetLegendHtml(legend) {
+    if (legend.length === 0) return '<p class="legend-empty">Nothing placed on the floor yet.</p>';
+    const rows = legend.map(l => `<tr>
+      <td><span class="chip" style="background:${l.color}">${l.letter}</span></td>
+      <td class="name">${escapeHtml(l.name)}</td>
+      <td class="count">${l.cases}</td>
+    </tr>`).join('');
+    const total = legend.reduce((sum, l) => sum + l.cases, 0);
+    return `<table class="legend">
+      <thead><tr><th></th><th>Product</th><th>Cases</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td></td><td>Total</td><td class="count">${total}</td></tr></tfoot>
+    </table>`;
   }
 
   function handlePrintSpecSheet() {
     if (!project) return;
 
-    const stackPlacements = collectSpecSheetStacks();
-    const { left, right } = buildCalloutGroups(stackPlacements);
-    const floorPlan = buildPrintFloorPlanHtml();
-
-    const contentRows = stackPlacements.map(p => ({ contents: describeStackContents(p.stack) }));
-    project.pallets.filter(p => p.visible).forEach(() => {
-      contentRows.push({ contents: 'Pallet marker (visual guide only)' });
-    });
-
+    const stacks = collectSpecSheetStacks();
+    const legend = buildSpecSheetLegend(stacks);
+    const mapSvg = buildSpecSheetMapSvg(stacks, legend);
+    const legendHtml = buildSpecSheetLegendHtml(legend);
     const snapshotUrl = Viewer3D.captureSnapshot();
-    const placementHtml = buildPlacementListTableHtml(contentRows);
-    const tallyHtml = buildTallyTableHtml(computeTally());
-    const title = `${project.name || 'Pallet'} - Spec Sheet`;
+    const title = project.name || 'Display';
 
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
@@ -3272,93 +3280,60 @@ const Grid = (() => {
       return;
     }
 
+    // Self-contained styling on purpose (no link to the app's dark stylesheet): this is paper for
+    // a stockroom, so it's black text on white, and nothing here depends on an external file.
     printWindow.document.write(`<!DOCTYPE html>
 <html>
 <head>
-<title>${escapeHtml(title)}</title>
-<link rel="stylesheet" href="${new URL('css/style.css', window.location.href).href}">
+<meta charset="utf-8">
+<title>${escapeHtml(title)} - Build Sheet</title>
 <style>
-  html, body { margin: 0; background: var(--bg, #14161a); }
-  body { padding: 20px; }
-  h1 { font-size: 1.1rem; margin: 0 0 4px; color: var(--text, #e8e9ec); }
-  h2 { font-size: 0.95rem; margin: 24px 0 8px; color: var(--text, #e8e9ec); }
-  .spec-sub { color: var(--text-dim); font-size: 0.85rem; margin: 0 0 12px; }
-  #specPage1 { position: relative; display: flex; align-items: center; justify-content: center; gap: 28px; page-break-after: always; min-height: 620px; }
-  .callout-col { display: flex; flex-direction: column; justify-content: space-around; gap: 10px; width: 220px; }
-  .callout-col.callout-right { align-items: flex-start; }
-  .callout-col.callout-left { align-items: flex-end; }
-  .callout-label { font-size: 0.85rem; font-weight: 600; color: var(--text, #e8e9ec); text-align: right; }
-  .callout-col.callout-right .callout-label { text-align: left; }
-  #floorWrap { flex-shrink: 0; }
-  .spec-page2-top { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
-  .spec-3d img { max-width: 480px; width: 100%; height: auto; border: 1px solid var(--border); }
-  .print-tally-empty { color: var(--text-dim); font-size: 0.85rem; }
-  @media print {
-    body { padding: 0; }
-    @page { size: landscape; }
-    .spec-3d img { max-width: 45%; }
-  }
+  @page { size: landscape; margin: 10mm; }
+  html, body { margin: 0; background: #fff; color: #111; font-family: Arial, Helvetica, sans-serif; }
+  body { padding: 16px; }
+  .page { page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+  h1 { font-size: 22px; margin: 0 0 2px; }
+  .sub { font-size: 13px; color: #555; margin: 0 0 12px; }
+  .sheet { display: flex; gap: 24px; align-items: stretch; height: calc(100vh - 90px); min-height: 520px; }
+  .map { flex: 1 1 auto; min-width: 0; border: 2px solid #111; background: #fafafa; display: flex; align-items: center; justify-content: center; padding: 8px; }
+  .map svg { max-width: 100%; max-height: 100%; }
+  .side { flex: 0 0 300px; display: flex; flex-direction: column; }
+  .how { font-size: 13px; line-height: 1.4; margin: 0 0 14px; padding: 10px 12px; background: #f1f1f1; border-left: 4px solid #111; }
+  .legend { border-collapse: collapse; width: 100%; font-size: 15px; }
+  .legend th { text-align: left; font-size: 12px; color: #555; border-bottom: 2px solid #111; padding: 4px 6px; }
+  .legend td { padding: 6px; border-bottom: 1px solid #ccc; vertical-align: middle; }
+  .legend td.name { font-weight: 700; }
+  .legend td.count, .legend th:last-child { text-align: right; white-space: nowrap; }
+  .legend tfoot td { border-bottom: none; border-top: 2px solid #111; font-weight: 700; }
+  .chip { display: inline-block; min-width: 30px; padding: 4px 6px; border-radius: 4px; color: #fff; font-weight: 800; font-size: 16px; text-align: center; text-shadow: 0 0 2px #000, 0 0 2px #000; border: 1px solid #111; }
+  .legend-empty { color: #555; }
+  .photo { display: flex; align-items: center; justify-content: center; height: calc(100vh - 90px); }
+  .photo img { max-width: 100%; max-height: 100%; border: 2px solid #111; }
+  @media print { body { padding: 0; } }
 </style>
 </head>
 <body>
-  <div id="specPage1">
-    <div class="callout-col callout-left">${buildCalloutColumnHtml(left, 'left')}</div>
-    <div id="floorWrap" class="grid-canvas" style="position:relative;width:${floorPlan.width}px;height:${floorPlan.height}px;">${floorPlan.html}</div>
-    <div class="callout-col callout-right">${buildCalloutColumnHtml(right, 'right')}</div>
-    <svg id="calloutSvg" style="position:absolute;left:0;top:0;pointer-events:none;">
-      <defs>
-        <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-          <path d="M0,0 L8,4 L0,8 Z" fill="#e6b422"></path>
-        </marker>
-      </defs>
-    </svg>
+  <div class="page">
+    <h1>${escapeHtml(title)}</h1>
+    <p class="sub">Build sheet -- floor space ${project.footprintWidth}" wide x ${project.footprintDepth}" deep -- printed ${new Date().toLocaleDateString()}</p>
+    <div class="sheet">
+      <div class="map">${mapSvg}</div>
+      <div class="side">
+        <p class="how"><strong>How to read this:</strong> each box is one spot on the floor. The letter says which product goes there (see the list below). "3 high" means stack 3 cases in that spot. Dashed outlines are pallets.</p>
+        ${legendHtml}
+      </div>
+    </div>
   </div>
-
-  <h1>${escapeHtml(title)}</h1>
-  <p class="spec-sub">${project.footprintWidth}"W x ${project.footprintDepth}"D floor -- generated ${new Date().toLocaleDateString()}</p>
-  <div class="spec-page2-top">
-    ${snapshotUrl ? `<div class="spec-3d"><img src="${snapshotUrl}" alt="3D reference view"></div>` : ''}
-  </div>
-  <h2>What's on the floor</h2>
-  ${placementHtml}
-  <h2>Items in this display</h2>
-  ${tallyHtml}
+  ${snapshotUrl ? `<div class="page">
+    <h1>${escapeHtml(title)} -- what it should look like</h1>
+    <p class="sub">3D view of the finished display</p>
+    <div class="photo"><img src="${snapshotUrl}" alt="3D view of the finished display"></div>
+  </div>` : ''}
   <script>
-    // Arrows are drawn here (rather than server-side/at generation time) because they have to
-    // point at each label's and each stack's ACTUAL laid-out position -- only available once the
-    // stylesheet has applied and the flex layout has settled.
-    function drawCallouts() {
-      const page = document.getElementById('specPage1');
-      const svg = document.getElementById('calloutSvg');
-      const pageRect = page.getBoundingClientRect();
-      svg.setAttribute('width', pageRect.width);
-      svg.setAttribute('height', pageRect.height);
-      document.querySelectorAll('.callout-label').forEach((label) => {
-        const side = label.dataset.side;
-        const labelRect = label.getBoundingClientRect();
-        const anchorX = (side === 'left' ? labelRect.right : labelRect.left) - pageRect.left;
-        const anchorY = labelRect.top + labelRect.height / 2 - pageRect.top;
-        label.dataset.targets.split('|').forEach((stackId) => {
-          const stackEl = document.querySelector('#floorWrap [data-stack-id="' + stackId + '"]');
-          if (!stackEl) return;
-          const stackRect = stackEl.getBoundingClientRect();
-          const targetX = stackRect.left + stackRect.width / 2 - pageRect.left;
-          const targetY = stackRect.top + stackRect.height / 2 - pageRect.top;
-          const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-          line.setAttribute('x1', anchorX);
-          line.setAttribute('y1', anchorY);
-          line.setAttribute('x2', targetX);
-          line.setAttribute('y2', targetY);
-          line.setAttribute('stroke', '#e6b422');
-          line.setAttribute('stroke-width', '1.5');
-          line.setAttribute('marker-end', 'url(#arrowhead)');
-          svg.appendChild(line);
-        });
-      });
-    }
-    const link = document.querySelector('link[rel="stylesheet"]');
-    const go = () => { drawCallouts(); window.focus(); window.print(); };
-    if (link.sheet) go(); else link.addEventListener('load', go);
+    const img = document.querySelector('img');
+    const go = () => { window.focus(); window.print(); };
+    if (!img || img.complete) go(); else img.addEventListener('load', go);
   <\/script>
 </body>
 </html>`);

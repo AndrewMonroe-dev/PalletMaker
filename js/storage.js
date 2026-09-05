@@ -200,17 +200,3 @@ function buildTallyTableHtml(rows) {
     <tfoot><tr><td>Total</td><td>${totalCases}</td><td>${totalLooseUnits > 0 ? totalLooseUnits : '—'}</td><td>$${totalCost.toFixed(2)}</td><td>$${totalRevenue.toFixed(2)}</td></tr></tfoot>
   </table>`;
 }
-
-// Renders the spec sheet's plain-language backup list: what's in each stack/pallet, with no
-// position/size/rotation detail -- that's carried visually by the schematic's arrows instead.
-function buildPlacementListTableHtml(rows) {
-  if (!rows || rows.length === 0) {
-    return '<p class="print-tally-empty">Nothing placed yet.</p>';
-  }
-  const bodyRows = rows.map(r => `<tr><td>${escapeHtml(r.contents)}</td></tr>`).join('');
-
-  return `<table class="tally-table">
-    <thead><tr><th>Contents</th></tr></thead>
-    <tbody>${bodyRows}</tbody>
-  </table>`;
-}
