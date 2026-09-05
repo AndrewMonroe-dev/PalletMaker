@@ -3124,9 +3124,10 @@ const Grid = (() => {
   // Units placed on top of a case are always that same case's product (an opened case on
   // display), so the sheet never draws or lists them -- they're folded into the case count.
 
-  // Stable, high-contrast fills that survive a cheap color printer. Picked so adjacent letters
-  // never share a hue family; wraps past 14 SKUs.
-  const SPEC_SHEET_COLORS = [
+  // Fallback fills for a SKU with no real color to show (deleted item/case) -- everything else on
+  // the map uses the product's own swatch color, per Andrew's ask, so a box actually matches what
+  // that SKU looks like on the shelf.
+  const SPEC_SHEET_FALLBACK_COLORS = [
     '#e53935', '#1e88e5', '#43a047', '#fb8c00', '#8e24aa', '#00acc1', '#fdd835',
     '#6d4c41', '#d81b60', '#3949ab', '#7cb342', '#f4511e', '#00897b', '#757575'
   ];
@@ -3145,17 +3146,18 @@ const Grid = (() => {
     if (item.kind === 'case') {
       const c = Cases.getCase(item.caseId);
       const it = c ? ItemTypes.getItemType(c.itemTypeId) : null;
-      if (!c || !it) return { key: `missing-${item.caseId}`, name: '(deleted case)', caseFraction: 1 };
-      return { key: `sku-${it.id}-${c.swatchId}`, name: c.name, caseFraction: 1 };
+      if (!c || !it) return { key: `missing-${item.caseId}`, name: '(deleted case)', caseFraction: 1, color: null };
+      const sw = it.palette.find(s => s.id === c.swatchId);
+      return { key: `sku-${it.id}-${c.swatchId}`, name: c.name, caseFraction: 1, color: getSwatchFlatColor(sw) };
     }
     const it = ItemTypes.getItemType(item.itemTypeId);
-    if (!it) return { key: `missing-${item.itemTypeId}`, name: '(deleted item)', caseFraction: 1 };
+    if (!it) return { key: `missing-${item.itemTypeId}`, name: '(deleted item)', caseFraction: 1, color: null };
     const sw = resolveSwatch(item.itemTypeId, item.swatchId);
     // Prefer the case's name when one exists for this SKU -- that's what the stockroom is labeled
     // with -- and only fall back to "Item - Swatch" for a product that never got a case built.
     const namedCase = Cases.getAll().find(c => c.itemTypeId === it.id && c.swatchId === item.swatchId);
     const name = namedCase ? namedCase.name : `${it.name} - ${sw ? sw.name : '?'}`;
-    return { key: `sku-${it.id}-${item.swatchId}`, name, caseFraction: it.unitsPerCase > 0 ? 1 / it.unitsPerCase : 1 };
+    return { key: `sku-${it.id}-${item.swatchId}`, name, caseFraction: it.unitsPerCase > 0 ? 1 / it.unitsPerCase : 1, color: getSwatchFlatColor(sw) };
   }
 
   // Every top-level stack (grouped or not) with its floor center and rotation, plus a per-SKU case
@@ -3167,7 +3169,7 @@ const Grid = (() => {
       const perSku = {};
       [...stack.items, ...(stack.toppers || []).flatMap(t => t.items)].forEach(item => {
         const sku = specSheetItemSku(item);
-        if (!perSku[sku.key]) perSku[sku.key] = { key: sku.key, name: sku.name, cases: 0 };
+        if (!perSku[sku.key]) perSku[sku.key] = { key: sku.key, name: sku.name, color: sku.color, cases: 0 };
         perSku[sku.key].cases += sku.caseFraction;
       });
       const skus = Object.values(perSku).map(s => ({ ...s, cases: Math.ceil(s.cases - 1e-9) }))
@@ -3195,14 +3197,16 @@ const Grid = (() => {
     const byKey = {};
     const order = [];
     stacks.forEach(s => s.skus.forEach(sku => {
-      if (!byKey[sku.key]) { byKey[sku.key] = { key: sku.key, name: sku.name, cases: 0, stacks: 0 }; order.push(sku.key); }
+      if (!byKey[sku.key]) { byKey[sku.key] = { key: sku.key, name: sku.name, color: sku.color, cases: 0, stacks: 0 }; order.push(sku.key); }
       byKey[sku.key].cases += sku.cases;
       byKey[sku.key].stacks += 1;
     }));
     return order.map((key, i) => ({
       ...byKey[key],
       letter: specSheetLetter(i),
-      color: SPEC_SHEET_COLORS[i % SPEC_SHEET_COLORS.length]
+      // The SKU's own swatch color when it has one (product-accurate, per Andrew), falling back
+      // to a stable palette color only for a deleted item/case with nothing real to show.
+      color: byKey[key].color || SPEC_SHEET_FALLBACK_COLORS[i % SPEC_SHEET_FALLBACK_COLORS.length]
     }));
   }
 
