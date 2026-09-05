@@ -1297,13 +1297,19 @@ const Viewer3D = (() => {
   const cachedTextures = new Set(); // the same textures, for a fast "is this one cached" check
   let texturesUsedThisBuild = new Set();
 
+  // One promise per cached texture, settled when its photo has decoded (or failed). The spec
+  // sheet snapshot awaits these -- rendering before they settle paints every photo face black.
+  const textureReady = new Map(); // dataUrl -> Promise
+
   function getCachedTexture(dataUrl) {
     let tex = textureCache.get(dataUrl);
     if (!tex) {
       // Render-on-demand means a texture finishing its async decode has to explicitly request a
       // repaint -- without markDirty here, photo faces stayed blank until the next orbit/drag
       // happened to trigger a frame.
-      tex = new THREE.TextureLoader().load(dataUrl, () => markDirty());
+      let settle;
+      textureReady.set(dataUrl, new Promise(resolve => { settle = resolve; }));
+      tex = new THREE.TextureLoader().load(dataUrl, () => { markDirty(); settle(); }, undefined, () => settle());
       textureCache.set(dataUrl, tex);
       cachedTextures.add(tex);
     }
@@ -1317,6 +1323,7 @@ const Viewer3D = (() => {
         tex.dispose();
         cachedTextures.delete(tex);
         textureCache.delete(dataUrl);
+        textureReady.delete(dataUrl);
       }
     });
     texturesUsedThisBuild = new Set();
@@ -2168,11 +2175,13 @@ const Viewer3D = (() => {
   // the front (azimuth 0 is +Z, the side the product photos face), slightly above, key light also
   // from the front so the faces are fully lit, framed on the placed cases rather than the whole
   // floor, at print resolution. Every view/light setting it touches is put back afterwards.
-  function captureSnapshot() {
+  async function captureSnapshot() {
     if (typeof THREE === 'undefined') return null;
     project = Grid.getActiveProject();
     if (!project) return null;
     buildScene();
+    // Photo faces are async textures; on a fresh session none have decoded yet at this point.
+    await Promise.all(Array.from(textureReady.values()));
 
     const saved = { azimuth, elevation, radius, orbitTargetX, orbitTargetZ, lightAzimuth, lightElevation, intensity: dirLight.intensity };
     const savedSize = new THREE.Vector2();
@@ -2200,9 +2209,10 @@ const Viewer3D = (() => {
     // display is what runs out of frame first, not its width.
     extent = Math.max(extent, tallest * 2);
     radius = extent * 1.2 + 30;
+    // Key light nearly level with the camera so it lands on the fronts, not the tops.
     lightAzimuth = 0;
-    lightElevation = 35;
-    dirLight.intensity = 1.35;
+    lightElevation = 15;
+    dirLight.intensity = 1.5;
 
     const W = 1600, H = 1000;
     renderer.setSize(W, H, false);

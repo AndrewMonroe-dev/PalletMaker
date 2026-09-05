@@ -3245,81 +3245,97 @@ const Grid = (() => {
       parts.push(`<text x="${s.cx}" y="${s.cy + d * 0.3}" text-anchor="middle" dominant-baseline="middle" font-size="${countSize}" font-weight="700" fill="#fff" stroke="#111" stroke-width="${countSize * 0.08}" paint-order="stroke">${totalCases} high</text>`);
     });
 
-    return `<svg viewBox="${minX} ${minY} ${vw} ${vh}" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif" style="width:100%;height:100%;">${parts.join('')}</svg>`;
+    return {
+      svg: `<svg viewBox="${minX} ${minY} ${vw} ${vh}" xmlns="http://www.w3.org/2000/svg" font-family="Arial, Helvetica, sans-serif" style="width:100%;height:100%;">${parts.join('')}</svg>`,
+      aspect: vw / vh
+    };
   }
 
   function buildSpecSheetLegendHtml(legend) {
     if (legend.length === 0) return '<p class="legend-empty">Nothing placed on the floor yet.</p>';
-    const rows = legend.map(l => `<tr>
-      <td><span class="chip" style="background:${l.color}">${l.letter}</span></td>
-      <td class="name">${escapeHtml(l.name)}</td>
-      <td class="count">${l.cases}</td>
-    </tr>`).join('');
+    // A grid rather than a table so the same markup flows as one column beside a tall display
+    // or several columns under a wide one.
+    const items = legend.map(l => `<div class="item">
+      <span class="chip" style="background:${l.color}">${l.letter}</span>
+      <span class="name">${escapeHtml(l.name)}</span>
+      <span class="count">${l.cases}</span>
+    </div>`).join('');
     const total = legend.reduce((sum, l) => sum + l.cases, 0);
-    return `<table class="legend">
-      <thead><tr><th></th><th>Product</th><th>Cases</th></tr></thead>
-      <tbody>${rows}</tbody>
-      <tfoot><tr><td></td><td>Total</td><td class="count">${total}</td></tr></tfoot>
-    </table>`;
+    return `<div class="legend">${items}<div class="item total"><span></span><span class="name">Total cases</span><span class="count">${total}</span></div></div>`;
   }
 
-  function handlePrintSpecSheet() {
+  async function handlePrintSpecSheet() {
     if (!project) return;
 
-    const stacks = collectSpecSheetStacks();
-    const legend = buildSpecSheetLegend(stacks);
-    const mapSvg = buildSpecSheetMapSvg(stacks, legend);
-    const legendHtml = buildSpecSheetLegendHtml(legend);
-    const snapshotUrl = Viewer3D.captureSnapshot();
-    const title = project.name || 'Display';
-
+    // The popup has to open synchronously inside the click, before any await, or the browser's
+    // pop-up blocker eats it. Content is written into it once the 3D shot is ready.
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
       alert('Your browser blocked the print window. Allow pop-ups for this site and try again.');
       return;
     }
+    printWindow.document.write('<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;padding:24px;">Building the sheet...</body></html>');
+
+    const stacks = collectSpecSheetStacks();
+    const legend = buildSpecSheetLegend(stacks);
+    const map = buildSpecSheetMapSvg(stacks, legend);
+    const legendHtml = buildSpecSheetLegendHtml(legend);
+    const snapshotUrl = await Viewer3D.captureSnapshot();
+    const title = project.name || 'Display';
+    // A wide display gets the full page width with the legend in columns underneath; a tall one
+    // sits beside a single-column legend. Either way the map is the majority of the page.
+    const layout = map.aspect > 1.15 ? 'wide' : 'tall';
 
     // Self-contained styling on purpose (no link to the app's dark stylesheet): this is paper for
     // a stockroom, so it's black text on white, and nothing here depends on an external file.
+    printWindow.document.open();
     printWindow.document.write(`<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <title>${escapeHtml(title)} - Build Sheet</title>
 <style>
-  @page { size: landscape; margin: 10mm; }
+  @page { size: landscape; margin: 8mm; }
   html, body { margin: 0; background: #fff; color: #111; font-family: Arial, Helvetica, sans-serif; }
-  body { padding: 10px; }
-  .page { page-break-after: always; height: calc(100vh - 20px); display: flex; flex-direction: column; }
+  body { padding: 8px; }
+  .page { page-break-after: always; height: calc(100vh - 16px); display: flex; flex-direction: column; }
   .page:last-child { page-break-after: auto; }
-  h1 { font-size: 16px; margin: 0; }
-  .sub { font-size: 10px; color: #555; margin: 0 0 6px; }
-  .sheet { display: flex; gap: 12px; align-items: stretch; flex: 1 1 auto; min-height: 0; }
-  .map { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: center; }
+  h1 { font-size: 15px; margin: 0; }
+  .sub { font-size: 9px; color: #555; margin: 0 0 4px; }
+  .sheet { display: flex; gap: 10px; flex: 1 1 auto; min-height: 0; }
+  .sheet.tall { flex-direction: row; align-items: stretch; }
+  .sheet.wide { flex-direction: column; }
+  .map { display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0; }
+  .sheet.tall .map { flex: 1 1 auto; }
+  .sheet.wide .map { flex: 0 0 66%; }
   .map svg { width: 100%; height: 100%; }
-  .side { flex: 0 0 190px; display: flex; flex-direction: column; }
-  .how { font-size: 9.5px; line-height: 1.35; margin: 0 0 8px; padding: 6px 8px; background: #f1f1f1; border-left: 3px solid #111; }
-  .legend { border-collapse: collapse; width: 100%; font-size: 11px; }
-  .legend th { text-align: left; font-size: 9px; color: #555; border-bottom: 2px solid #111; padding: 2px 4px; }
-  .legend td { padding: 3px 4px; border-bottom: 1px solid #ccc; vertical-align: middle; }
-  .legend td.name { font-weight: 700; }
-  .legend td.count, .legend th:last-child { text-align: right; white-space: nowrap; }
-  .legend tfoot td { border-bottom: none; border-top: 2px solid #111; font-weight: 700; }
-  .chip { display: inline-block; min-width: 20px; padding: 2px 4px; border-radius: 3px; color: #fff; font-weight: 800; font-size: 11px; text-align: center; text-shadow: 0 0 2px #000, 0 0 2px #000; border: 1px solid #111; }
+  .side { display: flex; flex-direction: column; min-height: 0; }
+  .sheet.tall .side { flex: 0 0 180px; }
+  .sheet.wide .side { flex: 1 1 auto; }
+  .how { font-size: 9px; line-height: 1.3; margin: 0 0 6px; padding: 5px 7px; background: #f1f1f1; border-left: 3px solid #111; }
+  .legend { display: grid; gap: 2px 14px; font-size: 10.5px; align-content: start; }
+  .sheet.tall .legend { grid-template-columns: 1fr; }
+  .sheet.wide .legend { grid-template-columns: repeat(4, 1fr); }
+  .legend .item { display: grid; grid-template-columns: 24px 1fr auto; align-items: center; gap: 5px; padding: 2px 0; border-bottom: 1px solid #ccc; }
+  .legend .name { font-weight: 700; }
+  .legend .count { text-align: right; white-space: nowrap; }
+  .legend .item.total { border-bottom: none; border-top: 2px solid #111; }
+  .sheet.wide .legend .item.total { grid-column: 1 / -1; }
+  .chip { display: inline-block; min-width: 18px; padding: 1px 3px; border-radius: 3px; color: #fff; font-weight: 800; font-size: 10.5px; text-align: center; text-shadow: 0 0 2px #000, 0 0 2px #000; border: 1px solid #111; }
   .legend-empty { color: #555; }
   .photo { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; }
   .photo img { max-width: 100%; max-height: 100%; border: 2px solid #111; }
-  @media print { body { padding: 0; } .page { height: auto; min-height: calc(100vh - 2px); } }
+  @media print { body { padding: 0; } .page { height: calc(100vh - 4px); } }
 </style>
 </head>
 <body>
   <div class="page">
     <h1>${escapeHtml(title)}</h1>
     <p class="sub">Build sheet -- floor space ${project.footprintWidth}" wide x ${project.footprintDepth}" deep -- printed ${new Date().toLocaleDateString()}</p>
-    <div class="sheet">
-      <div class="map">${mapSvg}</div>
+    <div class="sheet ${layout}">
+      <div class="map">${map.svg}</div>
       <div class="side">
-        <p class="how"><strong>How to read this:</strong> each box is one spot on the floor. The letter says which product goes there (see the list below). "3 high" means stack 3 cases in that spot. Dashed outlines are pallets.</p>
+        <p class="how"><strong>How to read this:</strong> each box is one spot on the floor. The letter says which product goes there (see the list). "3 high" means stack 3 cases in that spot. Dashed outlines are pallets.</p>
         ${legendHtml}
       </div>
     </div>
