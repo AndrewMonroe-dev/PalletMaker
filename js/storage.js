@@ -201,24 +201,16 @@ function buildTallyTableHtml(rows) {
   </table>`;
 }
 
-// Renders Grid.computeSpecSheetPlacements()'s rows as an HTML table -- the "build it" list that
-// pairs with the numbered badges on the spec sheet's floor plan: exactly where each stack/pallet
-// goes, measured from the floor's front-left corner, plus what's in it.
+// Renders the spec sheet's plain-language backup list: what's in each stack/pallet, with no
+// position/size/rotation detail -- that's carried visually by the schematic's arrows instead.
 function buildPlacementListTableHtml(rows) {
   if (!rows || rows.length === 0) {
     return '<p class="print-tally-empty">Nothing placed yet.</p>';
   }
-  const bodyRows = rows.map(r => `<tr>
-      <td>${r.number}</td>
-      <td>${escapeHtml(r.contents)}</td>
-      <td>${r.footprint}</td>
-      <td>${r.height}</td>
-      <td>${r.x.toFixed(1)}", ${r.y.toFixed(1)}"</td>
-      <td>${Math.round(r.angle)}&deg;</td>
-    </tr>`).join('');
+  const bodyRows = rows.map(r => `<tr><td>${escapeHtml(r.contents)}</td></tr>`).join('');
 
   return `<table class="tally-table">
-    <thead><tr><th>#</th><th>Contents</th><th>Footprint</th><th>Height</th><th>Center position (from front-left corner)</th><th>Rotation</th></tr></thead>
+    <thead><tr><th>Contents</th></tr></thead>
     <tbody>${bodyRows}</tbody>
   </table>`;
 }

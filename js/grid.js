@@ -3114,9 +3114,10 @@ const Grid = (() => {
   }
 
   // ---- Spec sheet ----
-  // A single build-ready document: numbered floor plan + 3D reference view + an exact position/
-  // height/contents list for every numbered stack and pallet marker, plus the item tally. Distinct
-  // from the plain Print button below (which is just the floor plan + tally) -- this is meant to
+  // A single build-ready document: page 1 is a full-page landscape schematic -- the floor plan
+  // with each SKU's actual name labeled beside it, connected by an arrow to every case it occupies
+  // -- and page 2 backs it up with a 3D reference view, a plain contents list, and the item tally.
+  // Distinct from the plain Print button below (just the floor plan + tally) -- this is meant to
   // be handed to (or printed for) whoever is actually building the display in a store, with no
   // screen required.
 
@@ -3127,103 +3128,141 @@ const Grid = (() => {
     }
     const it = ItemTypes.getItemType(item.itemTypeId);
     const sw = resolveSwatch(item.itemTypeId, item.swatchId);
-    return `${it ? it.name : '(deleted item)'} - ${sw ? sw.name : '?'} (loose unit)`;
+    return `${it ? it.name : '(deleted item)'} - ${sw ? sw.name : '?'}`;
   }
 
-  // Collapses a column of items into "3x Case Name, 2x Item - Red (loose unit)" rather than
-  // listing every individual layer -- most stacks are one item repeated straight up.
-  function summarizeItems(items) {
-    const parts = [];
-    items.forEach(item => {
-      const label = describeItemLabel(item);
-      const last = parts[parts.length - 1];
-      if (last && last.label === label) last.count++;
-      else parts.push({ label, count: 1 });
+  // Rolls a stack's base column AND its toppers together into one count per SKU -- units always
+  // ride on top of a case in this app, so which layer something physically sits in isn't worth
+  // stating; what matters is whether the units on top add up to another whole case (converted the
+  // same way the floor-wide tally does) or stay a partial one. Returns one row per distinct SKU in
+  // the stack: `label` is the bare product name (for the schematic's callouts), `text` is the
+  // case-counted description (for the plain list on page 2).
+  function tallyStackContents(stack) {
+    const allItems = [...stack.items, ...(stack.toppers || []).flatMap(t => t.items)];
+    const bySku = {};
+    function ensureRow(key, label, unitsPerCase) {
+      if (!bySku[key]) bySku[key] = { label, totalUnits: 0, unitsPerCase };
+      return bySku[key];
+    }
+    allItems.forEach(item => {
+      if (item.kind === 'case') {
+        const c = Cases.getCase(item.caseId);
+        const it = c ? ItemTypes.getItemType(c.itemTypeId) : null;
+        if (!c || !it) { ensureRow(`missing-${item.caseId}`, '(deleted case)', 0).totalUnits += 1; return; }
+        const sw = it.palette.find(s => s.id === c.swatchId);
+        const row = ensureRow(`sku-${it.id}-${c.swatchId}`, describeItemLabel(item), it.unitsPerCase);
+        row.totalUnits += c.rows * c.cols * c.layers;
+      } else {
+        const it = ItemTypes.getItemType(item.itemTypeId);
+        if (!it) { ensureRow(`missing-${item.itemTypeId}`, '(deleted item type)', 0).totalUnits += 1; return; }
+        const row = ensureRow(`sku-${it.id}-${item.swatchId}`, describeItemLabel(item), it.unitsPerCase);
+        row.totalUnits += 1;
+      }
     });
-    return parts.map(p => (p.count > 1 ? `${p.count}x ${p.label}` : p.label)).join(', ');
+    return Object.values(bySku).map(row => {
+      if (!row.unitsPerCase) return { label: row.label, text: `${row.totalUnits}x ${row.label}` };
+      const cases = Math.floor(row.totalUnits / row.unitsPerCase);
+      const loose = row.totalUnits % row.unitsPerCase;
+      const parts = [];
+      if (cases > 0) parts.push(`${cases} case${cases > 1 ? 's' : ''} of ${row.label}`);
+      if (loose > 0) parts.push(`${loose} loose unit${loose > 1 ? 's' : ''} of ${row.label}`);
+      return { label: row.label, text: parts.join(' + ') || `0x ${row.label}` };
+    });
   }
 
   function describeStackContents(stack) {
-    let text = summarizeItems(stack.items);
-    (stack.toppers || []).forEach(t => {
-      text += ` + on top: ${summarizeItems(t.items)}`;
-    });
-    return text;
+    return tallyStackContents(stack).map(r => r.text).join(', ');
   }
 
-  // One entry per top-level stack (grouped or not) and visible pallet marker, numbered in reading
-  // order (front-to-back, left-to-right) so the same numbers can be painted onto the floor plan
-  // and referenced in the placement table -- the two only work together as a build guide if they
-  // agree on numbering.
-  function collectSpecSheetPlacements() {
-    const placements = [];
-
+  // Every top-level stack (grouped or not), with its floor-center in inches -- the shared list the
+  // schematic's callouts and page 2's plain contents list are both built from.
+  function collectSpecSheetStacks() {
+    const list = [];
     project.stacks.filter(s => !s.groupId).forEach(stack => {
-      placements.push({
-        kind: 'stack', stack,
-        cx: stack.x + stack.footprintW / 2,
-        cy: stack.y + stack.footprintD / 2,
-        angle: stack.angle || 0
-      });
+      list.push({ stack, cx: stack.x + stack.footprintW / 2, cy: stack.y + stack.footprintD / 2 });
     });
-
     project.groups.forEach(group => {
       getGroupMembers(group).forEach(({ stack, worldCenter }) => {
-        placements.push({ kind: 'stack', stack, cx: worldCenter.x, cy: worldCenter.y, angle: group.angle });
+        list.push({ stack, cx: worldCenter.x, cy: worldCenter.y });
+      });
+    });
+    list.sort((a, b) => (a.cy - b.cy) || (a.cx - b.cx));
+    return list;
+  }
+
+  // One entry per distinct SKU on the floor, carrying every physical stack it occupies -- so a SKU
+  // placed in three different spots gets one name label with three arrows, not three labels.
+  function buildCalloutGroups(stackPlacements) {
+    const bySku = {};
+    stackPlacements.forEach(({ stack, cx, cy }) => {
+      tallyStackContents(stack).forEach(row => {
+        if (!bySku[row.label]) bySku[row.label] = { label: row.label, targets: [] };
+        bySku[row.label].targets.push({ stackId: stack.id, cx, cy });
+      });
+    });
+    // Left/right split (by which half of the floor a SKU's stacks sit on, on average) keeps most
+    // arrows short and uncrossed rather than every label competing for one side.
+    const midX = project.footprintWidth / 2;
+    const left = [], right = [];
+    Object.values(bySku).forEach(group => {
+      const avgX = group.targets.reduce((sum, t) => sum + t.cx, 0) / group.targets.length;
+      (avgX < midX ? left : right).push(group);
+    });
+    return { left, right };
+  }
+
+  function buildCalloutColumnHtml(groups, side) {
+    return groups.map((g, i) => {
+      const targets = g.targets.map(t => t.stackId).join('|');
+      return `<div class="callout-label" data-side="${side}" data-targets="${escapeHtml(targets)}">${escapeHtml(g.label)}</div>`;
+    }).join('');
+  }
+
+  // Renders the floor plan fresh at a print-appropriate scale, entirely independent of whatever
+  // zoom/pan the live Grid tab happens to be at -- a detached element built with the same box
+  // builders the live canvas uses (buildStackEl etc.), never inserted into the real #gridCanvas, so
+  // generating this can't disturb the on-screen view or its `scale`.
+  function buildPrintFloorPlanHtml() {
+    const savedScale = scale;
+    const maxW = 800, maxH = 560;
+    scale = Math.min(maxW / project.footprintWidth, maxH / project.footprintDepth);
+
+    const temp = document.createElement('div');
+    project.pallets.filter(p => p.visible).forEach(pallet => temp.appendChild(buildPalletEl(pallet)));
+    project.stacks.filter(s => !s.groupId).forEach(stack => {
+      temp.appendChild(buildStackEl(stack));
+      (stack.toppers || []).forEach(t => temp.appendChild(buildTopperEl(stack, t)));
+    });
+    project.groups.forEach(group => {
+      getGroupMembers(group).forEach(({ stack, worldCenter }) => {
+        temp.appendChild(buildGroupMemberEl(group, stack, worldCenter));
+        (stack.toppers || []).forEach(t => temp.appendChild(buildGroupTopperEl(group, stack, worldCenter, t)));
       });
     });
 
-    project.pallets.filter(p => p.visible).forEach(pallet => {
-      placements.push({ kind: 'pallet', pallet, cx: pallet.centerX, cy: pallet.centerY, angle: pallet.angle || 0 });
-    });
-
-    placements.sort((a, b) => (a.cy - b.cy) || (a.cx - b.cx));
-    placements.forEach((p, i) => { p.number = i + 1; });
-    return placements;
-  }
-
-  function buildSpecSheetRows(placements) {
-    return placements.map(p => {
-      if (p.kind === 'pallet') {
-        return {
-          number: p.number, contents: 'Pallet marker (visual guide only)',
-          footprint: `${PALLET_W}"x${PALLET_D}"`, height: '—',
-          x: p.cx, y: p.cy, angle: p.angle
-        };
-      }
-      const stack = p.stack;
-      const height = Viewer3D.getStackHeight(stack);
-      return {
-        number: p.number, contents: describeStackContents(stack),
-        footprint: `${stack.footprintW.toFixed(1)}"x${stack.footprintD.toFixed(1)}"`,
-        height: `${height.toFixed(1)}"`,
-        x: p.cx, y: p.cy, angle: p.angle
-      };
-    });
-  }
-
-  // Numbered badges are appended as siblings of the cloned canvas markup rather than as children
-  // of each (possibly rotated) stack element -- a badge nested inside a rotated element would spin
-  // sideways with it. Positioned in the same inch-to-pixel `scale` the live canvas itself uses, so
-  // they land exactly on each stack/pallet's true center regardless of its rotation.
-  function buildSpecSheetBadgesHtml(placements) {
-    return placements.map(p => `<div style="position:absolute;left:${(p.cx * scale).toFixed(1)}px;top:${(p.cy * scale).toFixed(1)}px;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;background:#e6b422;color:#111;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;border:2px solid #14161a;z-index:50;">${p.number}</div>`).join('');
+    const result = {
+      html: temp.innerHTML,
+      width: project.footprintWidth * scale,
+      height: project.footprintDepth * scale
+    };
+    scale = savedScale;
+    return result;
   }
 
   function handlePrintSpecSheet() {
     if (!project) return;
 
-    const placements = collectSpecSheetPlacements();
-    const rows = buildSpecSheetRows(placements);
+    const stackPlacements = collectSpecSheetStacks();
+    const { left, right } = buildCalloutGroups(stackPlacements);
+    const floorPlan = buildPrintFloorPlanHtml();
 
-    const canvas = document.getElementById('gridCanvas');
-    const canvasClone = canvas.cloneNode(true);
-    canvasClone.querySelectorAll('.grid-drag-preview').forEach(el => el.remove());
-    canvasClone.removeAttribute('id');
-    const badgesHtml = buildSpecSheetBadgesHtml(placements);
+    const contentRows = stackPlacements.map(p => ({ contents: describeStackContents(p.stack) }));
+    project.pallets.filter(p => p.visible).forEach(() => {
+      contentRows.push({ contents: 'Pallet marker (visual guide only)' });
+    });
 
     const snapshotUrl = Viewer3D.captureSnapshot();
-    const placementHtml = buildPlacementListTableHtml(rows);
+    const placementHtml = buildPlacementListTableHtml(contentRows);
     const tallyHtml = buildTallyTableHtml(computeTally());
     const title = `${project.name || 'Pallet'} - Spec Sheet`;
 
@@ -3240,33 +3279,85 @@ const Grid = (() => {
 <link rel="stylesheet" href="${new URL('css/style.css', window.location.href).href}">
 <style>
   html, body { margin: 0; background: var(--bg, #14161a); }
-  body { padding: 24px; }
+  body { padding: 20px; }
   h1 { font-size: 1.1rem; margin: 0 0 4px; color: var(--text, #e8e9ec); }
   h2 { font-size: 0.95rem; margin: 24px 0 8px; color: var(--text, #e8e9ec); }
-  .spec-sub { color: var(--text-dim); font-size: 0.85rem; margin: 0 0 16px; }
-  .spec-top { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .spec-sub { color: var(--text-dim); font-size: 0.85rem; margin: 0 0 12px; }
+  #specPage1 { position: relative; display: flex; align-items: center; justify-content: center; gap: 28px; page-break-after: always; min-height: 620px; }
+  .callout-col { display: flex; flex-direction: column; justify-content: space-around; gap: 10px; width: 220px; }
+  .callout-col.callout-right { align-items: flex-start; }
+  .callout-col.callout-left { align-items: flex-end; }
+  .callout-label { font-size: 0.85rem; font-weight: 600; color: var(--text, #e8e9ec); text-align: right; }
+  .callout-col.callout-right .callout-label { text-align: left; }
+  #floorWrap { flex-shrink: 0; }
+  .spec-page2-top { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
   .spec-3d img { max-width: 480px; width: 100%; height: auto; border: 1px solid var(--border); }
   .print-tally-empty { color: var(--text-dim); font-size: 0.85rem; }
   @media print {
     body { padding: 0; }
+    @page { size: landscape; }
     .spec-3d img { max-width: 45%; }
   }
 </style>
 </head>
 <body>
+  <div id="specPage1">
+    <div class="callout-col callout-left">${buildCalloutColumnHtml(left, 'left')}</div>
+    <div id="floorWrap" class="grid-canvas" style="position:relative;width:${floorPlan.width}px;height:${floorPlan.height}px;">${floorPlan.html}</div>
+    <div class="callout-col callout-right">${buildCalloutColumnHtml(right, 'right')}</div>
+    <svg id="calloutSvg" style="position:absolute;left:0;top:0;pointer-events:none;">
+      <defs>
+        <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#e6b422"></path>
+        </marker>
+      </defs>
+    </svg>
+  </div>
+
   <h1>${escapeHtml(title)}</h1>
   <p class="spec-sub">${project.footprintWidth}"W x ${project.footprintDepth}"D floor -- generated ${new Date().toLocaleDateString()}</p>
-  <div class="spec-top">
-    <div style="position:relative;flex-shrink:0;width:${canvas.style.width};height:${canvas.style.height};" class="grid-canvas">${canvasClone.innerHTML}${badgesHtml}</div>
+  <div class="spec-page2-top">
     ${snapshotUrl ? `<div class="spec-3d"><img src="${snapshotUrl}" alt="3D reference view"></div>` : ''}
   </div>
-  <h2>Placement list</h2>
+  <h2>What's on the floor</h2>
   ${placementHtml}
   <h2>Items in this display</h2>
   ${tallyHtml}
   <script>
+    // Arrows are drawn here (rather than server-side/at generation time) because they have to
+    // point at each label's and each stack's ACTUAL laid-out position -- only available once the
+    // stylesheet has applied and the flex layout has settled.
+    function drawCallouts() {
+      const page = document.getElementById('specPage1');
+      const svg = document.getElementById('calloutSvg');
+      const pageRect = page.getBoundingClientRect();
+      svg.setAttribute('width', pageRect.width);
+      svg.setAttribute('height', pageRect.height);
+      document.querySelectorAll('.callout-label').forEach((label) => {
+        const side = label.dataset.side;
+        const labelRect = label.getBoundingClientRect();
+        const anchorX = (side === 'left' ? labelRect.right : labelRect.left) - pageRect.left;
+        const anchorY = labelRect.top + labelRect.height / 2 - pageRect.top;
+        label.dataset.targets.split('|').forEach((stackId) => {
+          const stackEl = document.querySelector('#floorWrap [data-stack-id="' + stackId + '"]');
+          if (!stackEl) return;
+          const stackRect = stackEl.getBoundingClientRect();
+          const targetX = stackRect.left + stackRect.width / 2 - pageRect.left;
+          const targetY = stackRect.top + stackRect.height / 2 - pageRect.top;
+          const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          line.setAttribute('x1', anchorX);
+          line.setAttribute('y1', anchorY);
+          line.setAttribute('x2', targetX);
+          line.setAttribute('y2', targetY);
+          line.setAttribute('stroke', '#e6b422');
+          line.setAttribute('stroke-width', '1.5');
+          line.setAttribute('marker-end', 'url(#arrowhead)');
+          svg.appendChild(line);
+        });
+      });
+    }
     const link = document.querySelector('link[rel="stylesheet"]');
-    const go = () => { window.focus(); window.print(); };
+    const go = () => { drawCallouts(); window.focus(); window.print(); };
     if (link.sheet) go(); else link.addEventListener('load', go);
   <\/script>
 </body>
