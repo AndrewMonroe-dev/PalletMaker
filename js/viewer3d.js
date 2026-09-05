@@ -2163,13 +2163,64 @@ const Viewer3D = (() => {
   // the scene first if it doesn't exist yet (or belongs to a different project) -- same lazy
   // buildScene() the 3D tab itself uses on first visit, just without starting the continuous
   // render loop, so this never leaves background rendering running the way visiting the tab does.
+  //
+  // The shot is always the same regardless of how the user last left the 3D tab: straight on from
+  // the front (azimuth 0 is +Z, the side the product photos face), slightly above, key light also
+  // from the front so the faces are fully lit, framed on the placed cases rather than the whole
+  // floor, at print resolution. Every view/light setting it touches is put back afterwards.
   function captureSnapshot() {
     if (typeof THREE === 'undefined') return null;
     project = Grid.getActiveProject();
     if (!project) return null;
     buildScene();
+
+    const saved = { azimuth, elevation, radius, orbitTargetX, orbitTargetZ, lightAzimuth, lightElevation, intensity: dirLight.intensity };
+    const savedSize = new THREE.Vector2();
+    renderer.getSize(savedSize);
+
+    // Frame what's actually on the floor. Grouped stacks live at their group-rotated centers.
+    const centers = [];
+    project.stacks.filter(s => !s.groupId).forEach(s => centers.push({ x: s.x + s.footprintW / 2, y: s.y + s.footprintD / 2, r: Math.max(s.footprintW, s.footprintD) / 2, h: computeStackTotalHeight(s) }));
+    project.groups.forEach(g => Grid.getGroupMembers(g).forEach(({ stack, worldCenter }) => centers.push({ x: worldCenter.x, y: worldCenter.y, r: Math.max(stack.footprintW, stack.footprintD) / 2, h: computeStackTotalHeight(stack) })));
+    let extent = Math.max(project.footprintWidth, project.footprintDepth);
+    let cx = project.footprintWidth / 2, cy = project.footprintDepth / 2, tallest = 20;
+    if (centers.length) {
+      const minX = Math.min(...centers.map(c => c.x - c.r)), maxX = Math.max(...centers.map(c => c.x + c.r));
+      const minY = Math.min(...centers.map(c => c.y - c.r)), maxY = Math.max(...centers.map(c => c.y + c.r));
+      cx = (minX + maxX) / 2; cy = (minY + maxY) / 2;
+      tallest = Math.max(...centers.map(c => c.h));
+      extent = Math.max(maxX - minX, maxY - minY, tallest);
+    }
+
+    azimuth = 0;
+    elevation = Math.PI / 9; // 20 degrees above: front-on, with just enough top to read depth
+    orbitTargetX = toSceneX(cx);
+    orbitTargetZ = toSceneZ(cy);
+    // Height counts double in the extent: at a 20-degree elevation the vertical span of the
+    // display is what runs out of frame first, not its width.
+    extent = Math.max(extent, tallest * 2);
+    radius = extent * 1.2 + 30;
+    lightAzimuth = 0;
+    lightElevation = 35;
+    dirLight.intensity = 1.35;
+
+    const W = 1600, H = 1000;
+    renderer.setSize(W, H, false);
+    camera.aspect = W / H;
+    camera.updateProjectionMatrix();
+    updateLightPosition();
+    updateCameraPosition();
     renderer.render(scene, camera);
-    return renderer.domElement.toDataURL('image/png');
+    const dataUrl = renderer.domElement.toDataURL('image/png');
+
+    ({ azimuth, elevation, radius, orbitTargetX, orbitTargetZ, lightAzimuth, lightElevation } = saved);
+    dirLight.intensity = saved.intensity;
+    renderer.setSize(savedSize.x, savedSize.y, false);
+    camera.aspect = savedSize.x / savedSize.y;
+    camera.updateProjectionMatrix();
+    updateLightPosition();
+    updateCameraPosition();
+    return dataUrl;
   }
 
   return { init, refresh, stopRenderLoop, getStackHeight, captureSnapshot };

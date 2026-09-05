@@ -3217,7 +3217,9 @@ const Grid = (() => {
     pallets.forEach(p => pts.push(...rotatedCorners(p.centerX, p.centerY, PALLET_W / 2, PALLET_D / 2, p.angle || 0)));
     if (pts.length === 0) pts.push({ x: 0, y: 0 }, { x: project.footprintWidth, y: project.footprintDepth });
 
-    const margin = 6;
+    // Tight crop: only the cases matter, so the margin is just enough to keep an edge stroke from
+    // being clipped. The floor's own outline is deliberately not drawn.
+    const margin = 1;
     const minX = Math.min(...pts.map(p => p.x)) - margin;
     const minY = Math.min(...pts.map(p => p.y)) - margin;
     const maxX = Math.max(...pts.map(p => p.x)) + margin;
@@ -3225,9 +3227,6 @@ const Grid = (() => {
     const vw = maxX - minX, vh = maxY - minY;
 
     const parts = [];
-    // Floor edge, so "against the wall / at the edge" placements read correctly. Clipped by the
-    // viewBox whenever the display is much smaller than the floor.
-    parts.push(`<rect x="0" y="0" width="${project.footprintWidth}" height="${project.footprintDepth}" fill="none" stroke="#9e9e9e" stroke-width="0.4" stroke-dasharray="2 1.5"/>`);
     pallets.forEach(p => {
       parts.push(`<rect x="${p.centerX - PALLET_W / 2}" y="${p.centerY - PALLET_D / 2}" width="${PALLET_W}" height="${PALLET_D}" transform="rotate(${p.angle || 0} ${p.centerX} ${p.centerY})" fill="none" stroke="#616161" stroke-width="0.6" stroke-dasharray="1.5 1"/>`);
       parts.push(`<text x="${p.centerX}" y="${p.centerY - PALLET_D / 2 + 3}" text-anchor="middle" font-size="2.6" fill="#616161">PALLET</text>`);
@@ -3290,27 +3289,27 @@ const Grid = (() => {
 <style>
   @page { size: landscape; margin: 10mm; }
   html, body { margin: 0; background: #fff; color: #111; font-family: Arial, Helvetica, sans-serif; }
-  body { padding: 16px; }
-  .page { page-break-after: always; }
+  body { padding: 10px; }
+  .page { page-break-after: always; height: calc(100vh - 20px); display: flex; flex-direction: column; }
   .page:last-child { page-break-after: auto; }
-  h1 { font-size: 22px; margin: 0 0 2px; }
-  .sub { font-size: 13px; color: #555; margin: 0 0 12px; }
-  .sheet { display: flex; gap: 24px; align-items: stretch; height: calc(100vh - 90px); min-height: 520px; }
-  .map { flex: 1 1 auto; min-width: 0; border: 2px solid #111; background: #fafafa; display: flex; align-items: center; justify-content: center; padding: 8px; }
-  .map svg { max-width: 100%; max-height: 100%; }
-  .side { flex: 0 0 300px; display: flex; flex-direction: column; }
-  .how { font-size: 13px; line-height: 1.4; margin: 0 0 14px; padding: 10px 12px; background: #f1f1f1; border-left: 4px solid #111; }
-  .legend { border-collapse: collapse; width: 100%; font-size: 15px; }
-  .legend th { text-align: left; font-size: 12px; color: #555; border-bottom: 2px solid #111; padding: 4px 6px; }
-  .legend td { padding: 6px; border-bottom: 1px solid #ccc; vertical-align: middle; }
+  h1 { font-size: 16px; margin: 0; }
+  .sub { font-size: 10px; color: #555; margin: 0 0 6px; }
+  .sheet { display: flex; gap: 12px; align-items: stretch; flex: 1 1 auto; min-height: 0; }
+  .map { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: center; }
+  .map svg { width: 100%; height: 100%; }
+  .side { flex: 0 0 190px; display: flex; flex-direction: column; }
+  .how { font-size: 9.5px; line-height: 1.35; margin: 0 0 8px; padding: 6px 8px; background: #f1f1f1; border-left: 3px solid #111; }
+  .legend { border-collapse: collapse; width: 100%; font-size: 11px; }
+  .legend th { text-align: left; font-size: 9px; color: #555; border-bottom: 2px solid #111; padding: 2px 4px; }
+  .legend td { padding: 3px 4px; border-bottom: 1px solid #ccc; vertical-align: middle; }
   .legend td.name { font-weight: 700; }
   .legend td.count, .legend th:last-child { text-align: right; white-space: nowrap; }
   .legend tfoot td { border-bottom: none; border-top: 2px solid #111; font-weight: 700; }
-  .chip { display: inline-block; min-width: 30px; padding: 4px 6px; border-radius: 4px; color: #fff; font-weight: 800; font-size: 16px; text-align: center; text-shadow: 0 0 2px #000, 0 0 2px #000; border: 1px solid #111; }
+  .chip { display: inline-block; min-width: 20px; padding: 2px 4px; border-radius: 3px; color: #fff; font-weight: 800; font-size: 11px; text-align: center; text-shadow: 0 0 2px #000, 0 0 2px #000; border: 1px solid #111; }
   .legend-empty { color: #555; }
-  .photo { display: flex; align-items: center; justify-content: center; height: calc(100vh - 90px); }
+  .photo { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; }
   .photo img { max-width: 100%; max-height: 100%; border: 2px solid #111; }
-  @media print { body { padding: 0; } }
+  @media print { body { padding: 0; } .page { height: auto; min-height: calc(100vh - 2px); } }
 </style>
 </head>
 <body>
