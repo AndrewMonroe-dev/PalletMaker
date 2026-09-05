@@ -2150,5 +2150,27 @@ const Viewer3D = (() => {
     }
   }
 
-  return { init, refresh, stopRenderLoop };
+  // ---- Spec sheet support ----
+  // Lets grid.js pull a stack's real-world height and a reference 3D image without the 3D tab
+  // ever having been opened this session -- both needed for the combined build spec sheet, which
+  // lives on the Grid tab.
+
+  function getStackHeight(stack) {
+    return computeStackTotalHeight(stack);
+  }
+
+  // Renders one fresh frame straight from project data and returns it as a PNG data URL, building
+  // the scene first if it doesn't exist yet (or belongs to a different project) -- same lazy
+  // buildScene() the 3D tab itself uses on first visit, just without starting the continuous
+  // render loop, so this never leaves background rendering running the way visiting the tab does.
+  function captureSnapshot() {
+    if (typeof THREE === 'undefined') return null;
+    project = Grid.getActiveProject();
+    if (!project) return null;
+    buildScene();
+    renderer.render(scene, camera);
+    return renderer.domElement.toDataURL('image/png');
+  }
+
+  return { init, refresh, stopRenderLoop, getStackHeight, captureSnapshot };
 })();

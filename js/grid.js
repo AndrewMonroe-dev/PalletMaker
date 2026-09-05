@@ -71,6 +71,7 @@ const Grid = (() => {
     document.getElementById('btnUndo').addEventListener('click', undo);
     document.getElementById('btnRedo').addEventListener('click', redo);
     document.getElementById('btnPrintGrid').addEventListener('click', handlePrintGrid);
+    document.getElementById('btnPrintSpecSheet').addEventListener('click', handlePrintSpecSheet);
     document.getElementById('btnZoomIn').addEventListener('click', () => setZoom(zoomLevel + ZOOM_STEP));
     document.getElementById('btnZoomOut').addEventListener('click', () => setZoom(zoomLevel - ZOOM_STEP));
     document.getElementById('btnZoomReset').addEventListener('click', () => setZoom(1));
@@ -325,6 +326,7 @@ const Grid = (() => {
     redoBtn.disabled = redoStack.length === 0;
 
     document.getElementById('btnPrintGrid').classList.toggle('hidden', !project);
+    document.getElementById('btnPrintSpecSheet').classList.toggle('hidden', !project);
   }
 
   function render() {
@@ -3109,6 +3111,167 @@ const Grid = (() => {
 
     panel.innerHTML = '';
     panel.appendChild(table);
+  }
+
+  // ---- Spec sheet ----
+  // A single build-ready document: numbered floor plan + 3D reference view + an exact position/
+  // height/contents list for every numbered stack and pallet marker, plus the item tally. Distinct
+  // from the plain Print button below (which is just the floor plan + tally) -- this is meant to
+  // be handed to (or printed for) whoever is actually building the display in a store, with no
+  // screen required.
+
+  function describeItemLabel(item) {
+    if (item.kind === 'case') {
+      const c = Cases.getCase(item.caseId);
+      return c ? c.name : '(deleted case)';
+    }
+    const it = ItemTypes.getItemType(item.itemTypeId);
+    const sw = resolveSwatch(item.itemTypeId, item.swatchId);
+    return `${it ? it.name : '(deleted item)'} - ${sw ? sw.name : '?'} (loose unit)`;
+  }
+
+  // Collapses a column of items into "3x Case Name, 2x Item - Red (loose unit)" rather than
+  // listing every individual layer -- most stacks are one item repeated straight up.
+  function summarizeItems(items) {
+    const parts = [];
+    items.forEach(item => {
+      const label = describeItemLabel(item);
+      const last = parts[parts.length - 1];
+      if (last && last.label === label) last.count++;
+      else parts.push({ label, count: 1 });
+    });
+    return parts.map(p => (p.count > 1 ? `${p.count}x ${p.label}` : p.label)).join(', ');
+  }
+
+  function describeStackContents(stack) {
+    let text = summarizeItems(stack.items);
+    (stack.toppers || []).forEach(t => {
+      text += ` + on top: ${summarizeItems(t.items)}`;
+    });
+    return text;
+  }
+
+  // One entry per top-level stack (grouped or not) and visible pallet marker, numbered in reading
+  // order (front-to-back, left-to-right) so the same numbers can be painted onto the floor plan
+  // and referenced in the placement table -- the two only work together as a build guide if they
+  // agree on numbering.
+  function collectSpecSheetPlacements() {
+    const placements = [];
+
+    project.stacks.filter(s => !s.groupId).forEach(stack => {
+      placements.push({
+        kind: 'stack', stack,
+        cx: stack.x + stack.footprintW / 2,
+        cy: stack.y + stack.footprintD / 2,
+        angle: stack.angle || 0
+      });
+    });
+
+    project.groups.forEach(group => {
+      getGroupMembers(group).forEach(({ stack, worldCenter }) => {
+        placements.push({ kind: 'stack', stack, cx: worldCenter.x, cy: worldCenter.y, angle: group.angle });
+      });
+    });
+
+    project.pallets.filter(p => p.visible).forEach(pallet => {
+      placements.push({ kind: 'pallet', pallet, cx: pallet.centerX, cy: pallet.centerY, angle: pallet.angle || 0 });
+    });
+
+    placements.sort((a, b) => (a.cy - b.cy) || (a.cx - b.cx));
+    placements.forEach((p, i) => { p.number = i + 1; });
+    return placements;
+  }
+
+  function buildSpecSheetRows(placements) {
+    return placements.map(p => {
+      if (p.kind === 'pallet') {
+        return {
+          number: p.number, contents: 'Pallet marker (visual guide only)',
+          footprint: `${PALLET_W}"x${PALLET_D}"`, height: '—',
+          x: p.cx, y: p.cy, angle: p.angle
+        };
+      }
+      const stack = p.stack;
+      const height = Viewer3D.getStackHeight(stack);
+      return {
+        number: p.number, contents: describeStackContents(stack),
+        footprint: `${stack.footprintW.toFixed(1)}"x${stack.footprintD.toFixed(1)}"`,
+        height: `${height.toFixed(1)}"`,
+        x: p.cx, y: p.cy, angle: p.angle
+      };
+    });
+  }
+
+  // Numbered badges are appended as siblings of the cloned canvas markup rather than as children
+  // of each (possibly rotated) stack element -- a badge nested inside a rotated element would spin
+  // sideways with it. Positioned in the same inch-to-pixel `scale` the live canvas itself uses, so
+  // they land exactly on each stack/pallet's true center regardless of its rotation.
+  function buildSpecSheetBadgesHtml(placements) {
+    return placements.map(p => `<div style="position:absolute;left:${(p.cx * scale).toFixed(1)}px;top:${(p.cy * scale).toFixed(1)}px;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;background:#e6b422;color:#111;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;border:2px solid #14161a;z-index:50;">${p.number}</div>`).join('');
+  }
+
+  function handlePrintSpecSheet() {
+    if (!project) return;
+
+    const placements = collectSpecSheetPlacements();
+    const rows = buildSpecSheetRows(placements);
+
+    const canvas = document.getElementById('gridCanvas');
+    const canvasClone = canvas.cloneNode(true);
+    canvasClone.querySelectorAll('.grid-drag-preview').forEach(el => el.remove());
+    canvasClone.removeAttribute('id');
+    const badgesHtml = buildSpecSheetBadgesHtml(placements);
+
+    const snapshotUrl = Viewer3D.captureSnapshot();
+    const placementHtml = buildPlacementListTableHtml(rows);
+    const tallyHtml = buildTallyTableHtml(computeTally());
+    const title = `${project.name || 'Pallet'} - Spec Sheet`;
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert('Your browser blocked the print window. Allow pop-ups for this site and try again.');
+      return;
+    }
+
+    printWindow.document.write(`<!DOCTYPE html>
+<html>
+<head>
+<title>${escapeHtml(title)}</title>
+<link rel="stylesheet" href="${new URL('css/style.css', window.location.href).href}">
+<style>
+  html, body { margin: 0; background: var(--bg, #14161a); }
+  body { padding: 24px; }
+  h1 { font-size: 1.1rem; margin: 0 0 4px; color: var(--text, #e8e9ec); }
+  h2 { font-size: 0.95rem; margin: 24px 0 8px; color: var(--text, #e8e9ec); }
+  .spec-sub { color: var(--text-dim); font-size: 0.85rem; margin: 0 0 16px; }
+  .spec-top { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .spec-3d img { max-width: 480px; width: 100%; height: auto; border: 1px solid var(--border); }
+  .print-tally-empty { color: var(--text-dim); font-size: 0.85rem; }
+  @media print {
+    body { padding: 0; }
+    .spec-3d img { max-width: 45%; }
+  }
+</style>
+</head>
+<body>
+  <h1>${escapeHtml(title)}</h1>
+  <p class="spec-sub">${project.footprintWidth}"W x ${project.footprintDepth}"D floor -- generated ${new Date().toLocaleDateString()}</p>
+  <div class="spec-top">
+    <div style="position:relative;flex-shrink:0;width:${canvas.style.width};height:${canvas.style.height};" class="grid-canvas">${canvasClone.innerHTML}${badgesHtml}</div>
+    ${snapshotUrl ? `<div class="spec-3d"><img src="${snapshotUrl}" alt="3D reference view"></div>` : ''}
+  </div>
+  <h2>Placement list</h2>
+  ${placementHtml}
+  <h2>Items in this display</h2>
+  ${tallyHtml}
+  <script>
+    const link = document.querySelector('link[rel="stylesheet"]');
+    const go = () => { window.focus(); window.print(); };
+    if (link.sheet) go(); else link.addEventListener('load', go);
+  <\/script>
+</body>
+</html>`);
+    printWindow.document.close();
   }
 
   // ---- Print ----
