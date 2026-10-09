@@ -26,6 +26,12 @@ const Viewer3D = (() => {
   let radius = 100;
   let orbitTargetX = 0; // world-space XZ offset of the orbit pivot, shifted by cursor-centered zoom
   let orbitTargetZ = 0;
+  let orbitPivotY = null; // null = the floor-size default (see orbitTargetY); set by zoom-to-face and Fit
+
+  // Zoom limits are measured from the pivot. The pivot follows the cursor onto whatever face is
+  // being zoomed toward, so a small minimum still puts the camera right at that face.
+  const MIN_ZOOM_RADIUS = 6;
+  const FIT_FILL = 0.8; // Fit button: the product fills this fraction of the limiting screen dimension
 
   // ---- Lighting ----
   let dirLight = null;
@@ -73,6 +79,7 @@ const Viewer3D = (() => {
   function init(appState) {
     state = appState;
     document.getElementById('viewer3dAddImage').addEventListener('change', handleAddImage);
+    document.getElementById('viewer3dFitBtn').addEventListener('click', fitViewToProduct);
     document.getElementById('viewer3dExportBtn').addEventListener('click', handleExportImage);
     document.getElementById('viewer3dPrintBtn').addEventListener('click', handlePrintImage);
     document.getElementById('viewer3dArBtn').addEventListener('click', handleViewInAr);
@@ -253,20 +260,43 @@ const Viewer3D = (() => {
     container.addEventListener('wheel', (e) => {
       if (!project || !camera) return;
       e.preventDefault();
-      // Zoom toward the point under the cursor rather than the fixed orbit pivot: find where the
-      // cursor ray hits the pivot-height plane (using the camera as it is *before* this zoom step),
-      // then nudge the pivot itself toward that point by the same fraction the radius is about to
-      // shrink -- so that point stays roughly under the cursor after the radius change, instead of
-      // the view zooming in/out around the floor's center regardless of where you're pointing.
-      const targetY = orbitTargetY();
-      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -targetY);
-      const cursorPoint = raycastPlane(e, plane);
+      // Zoom toward the point under the cursor so that point stays put on screen. The point is
+      // whatever case face the cursor is over (full 3D, so you can zoom straight into any side or
+      // height of the display), falling back to the pivot-height plane over empty space. The pivot
+      // moves toward that point by the same fraction the radius shrinks, which scales the whole
+      // camera rig about it.
       const oldRadius = radius;
-      const newRadius = Math.max(20, radius + e.deltaY * 0.5);
-      if (cursorPoint && oldRadius > 0) {
+      // Wheel units differ by device (pixels, lines, pages). Normalize, then cap one event so a
+      // fast spin or trackpad flick can't fling the camera out of range in a single step.
+      let delta = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 100 : 1);
+      delta = Math.max(-240, Math.min(240, delta));
+      // Proportional steps: fine control up close, fast travel from far away.
+      const newRadius = Math.max(MIN_ZOOM_RADIUS, Math.min(maxZoomRadius(), oldRadius * Math.exp(delta * 0.0015)));
+
+      // Only ever zoom toward a REAL surface (a case face or the floor): zooming toward a point
+      // in mid-air leaves the pivot hovering over nothing, and a close-up of nothing is the
+      // "lost, can't find it" state. Try the cursor first, then the screen center. Points far
+      // beyond the current view (a ray skimming the floor near the horizon) are skipped too,
+      // rather than flinging the camera toward them.
+      const pivot = new THREE.Vector3(orbitTargetX, orbitTargetY(), orbitTargetZ);
+      let focus = surfacePointAtNDC(getMouseNDC(e));
+      if (!focus || focus.distanceTo(pivot) > oldRadius * 3) focus = surfacePointAtNDC(new THREE.Vector2(0, 0));
+      if (focus && focus.distanceTo(pivot) > oldRadius * 3) focus = null;
+
+      // Nothing real to zoom toward: zooming OUT is still fine (pivot stays), zooming IN is not.
+      if (!focus && newRadius < oldRadius) return;
+      if (focus && oldRadius > 0) {
         const factor = 1 - (newRadius / oldRadius);
-        orbitTargetX += (cursorPoint.x - orbitTargetX) * factor;
-        orbitTargetZ += (cursorPoint.z - orbitTargetZ) * factor;
+        pivot.addScaledVector(focus.clone().sub(pivot), factor);
+        // Keep the pivot over the floor and no higher than the product (or the default pivot
+        // height if that's taller). The pivot is always the center of the screen, so this
+        // guarantees the view can never end up pointed at empty void.
+        const bounds = getProductBounds();
+        const maxY = Math.max(bounds ? bounds.height : 0, orbitDefaultY());
+        const halfW = project.footprintWidth / 2, halfD = project.footprintDepth / 2;
+        orbitTargetX = Math.max(-halfW, Math.min(halfW, pivot.x));
+        orbitTargetZ = Math.max(-halfD, Math.min(halfD, pivot.z));
+        orbitPivotY = Math.max(0, Math.min(maxY, pivot.y));
       }
       radius = newRadius;
       updateCameraPosition();
@@ -288,6 +318,18 @@ const Viewer3D = (() => {
     raycaster.setFromCamera(getMouseNDC(e), camera);
     const hits = raycaster.intersectObjects(objects, false);
     return hits.length ? hits[0] : null;
+  }
+
+  // The nearest real surface along the ray through a screen point (normalized device coordinates):
+  // a case face first, else the floor if the ray lands inside it. Null over empty background.
+  function surfacePointAtNDC(ndc) {
+    raycaster.setFromCamera(ndc, camera);
+    const hits = raycaster.intersectObjects(Object.values(stackMeshMap), false);
+    if (hits.length) return hits[0].point.clone();
+    const p = new THREE.Vector3();
+    if (!raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), p)) return null;
+    if (Math.abs(p.x) > project.footprintWidth / 2 || Math.abs(p.z) > project.footprintDepth / 2) return null;
+    return p;
   }
 
   function raycastPlane(e, plane) {
@@ -1421,6 +1463,7 @@ const Viewer3D = (() => {
       radius = maxDim * 1.4 + 40;
       orbitTargetX = 0;
       orbitTargetZ = 0;
+      orbitPivotY = null;
     }
     updateCameraPosition();
   }
@@ -1661,9 +1704,75 @@ const Viewer3D = (() => {
     rebuildPalletSelectionVisuals3D();
   }
 
-  // Fixed pivot height (unrelated to cursor-centered zoom, which only ever shifts the XZ position).
-  function orbitTargetY() {
+  // Pivot height: the floor-size default until zoom-to-face or Fit sets a real one.
+  function orbitDefaultY() {
     return project ? Math.max(project.footprintWidth, project.footprintDepth) / 6 : 0;
+  }
+
+  function orbitTargetY() {
+    return orbitPivotY !== null ? orbitPivotY : orbitDefaultY();
+  }
+
+  // Farthest the camera may sit from the pivot -- well inside the camera's far plane (5000) so
+  // the scene can never zoom out of existence.
+  function maxZoomRadius() {
+    const maxDim = project ? Math.max(project.footprintWidth, project.footprintDepth) : 100;
+    return Math.min(4000, maxDim * 4 + 200);
+  }
+
+  // Bounding box of everything stacked on the floor (grid coordinates), or null if the floor is
+  // empty. Grouped stacks live at their group-rotated centers; each stack counts as a circle of
+  // its larger half-footprint so a rotated case can't poke outside the box.
+  function getProductBounds() {
+    const items = [];
+    project.stacks.filter(s => !s.groupId).forEach(s => items.push({ x: s.x + s.footprintW / 2, y: s.y + s.footprintD / 2, r: Math.max(s.footprintW, s.footprintD) / 2, h: computeStackTotalHeight(s) }));
+    project.groups.forEach(g => Grid.getGroupMembers(g).forEach(({ stack, worldCenter }) => items.push({ x: worldCenter.x, y: worldCenter.y, r: Math.max(stack.footprintW, stack.footprintD) / 2, h: computeStackTotalHeight(stack) })));
+    if (!items.length) return null;
+    return {
+      minX: Math.min(...items.map(c => c.x - c.r)), maxX: Math.max(...items.map(c => c.x + c.r)),
+      minY: Math.min(...items.map(c => c.y - c.r)), maxY: Math.max(...items.map(c => c.y + c.r)),
+      height: Math.max(...items.map(c => c.h), 1)
+    };
+  }
+
+  // "Fit to Screen": re-center on the product and pull back until it fills FIT_FILL of the
+  // limiting screen dimension, keeping the current orbit angle. Also the way back when lost.
+  function fitViewToProduct() {
+    if (!project || !camera) return;
+    const bounds = getProductBounds();
+    if (!bounds) {
+      // Nothing on the floor: go back to the default whole-floor view.
+      orbitTargetX = 0;
+      orbitTargetZ = 0;
+      orbitPivotY = null;
+      radius = Math.max(project.footprintWidth, project.footprintDepth) * 1.4 + 40;
+      updateCameraPosition();
+      return;
+    }
+    const w = bounds.maxX - bounds.minX;
+    const d = bounds.maxY - bounds.minY;
+    const h = bounds.height;
+    orbitTargetX = toSceneX((bounds.minX + bounds.maxX) / 2);
+    orbitTargetZ = toSceneZ((bounds.minY + bounds.maxY) / 2);
+    orbitPivotY = h / 2;
+
+    // Exact fit for the current angle: express each corner of the bounding box in camera space,
+    // then find the distance at which the farthest-out corner lands at FIT_FILL of the half-view.
+    const back = new THREE.Vector3(Math.sin(azimuth) * Math.cos(elevation), Math.sin(elevation), Math.cos(azimuth) * Math.cos(elevation));
+    const right = new THREE.Vector3(0, 1, 0).cross(back).normalize();
+    const up = back.clone().cross(right);
+    const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    const tanH = tanV * camera.aspect;
+    let fitRadius = MIN_ZOOM_RADIUS;
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) for (const sz of [-1, 1]) {
+      const corner = new THREE.Vector3(sx * w / 2, sy * h / 2, sz * d / 2);
+      const cx = Math.abs(corner.dot(right));
+      const cy = Math.abs(corner.dot(up));
+      const cz = corner.dot(back); // positive = toward the camera
+      fitRadius = Math.max(fitRadius, cz + cx / (FIT_FILL * tanH), cz + cy / (FIT_FILL * tanV));
+    }
+    radius = Math.min(maxZoomRadius(), fitRadius);
+    updateCameraPosition();
   }
 
   function updateCameraPosition() {
@@ -2206,7 +2315,7 @@ const Viewer3D = (() => {
     await settleWithTimeout(Array.from(textureReady.values()), 4000);
 
     if (!renderer || !scene || !camera || !dirLight) return null;
-    const saved = { azimuth, elevation, radius, orbitTargetX, orbitTargetZ, lightAzimuth, lightElevation, intensity: dirLight.intensity };
+    const saved = { azimuth, elevation, radius, orbitTargetX, orbitTargetZ, orbitPivotY, lightAzimuth, lightElevation, intensity: dirLight.intensity };
     const savedSize = new THREE.Vector2();
     renderer.getSize(savedSize);
 
@@ -2233,6 +2342,7 @@ const Viewer3D = (() => {
       elevation = Math.PI / 9; // 20 degrees above: front-on, with just enough top to read depth
       orbitTargetX = toSceneX(cx);
       orbitTargetZ = toSceneZ(cy);
+      orbitPivotY = null; // the still frame uses the default pivot height, not the live view's
       // Height counts double in the extent: at a 20-degree elevation the vertical span of the
       // display is what runs out of frame first, not its width.
       extent = Math.max(extent, tallest * 2);
@@ -2254,7 +2364,7 @@ const Viewer3D = (() => {
       console.error('Spec sheet: rendering the 3D snapshot failed.', e);
       return null;
     } finally {
-      ({ azimuth, elevation, radius, orbitTargetX, orbitTargetZ, lightAzimuth, lightElevation } = saved);
+      ({ azimuth, elevation, radius, orbitTargetX, orbitTargetZ, orbitPivotY, lightAzimuth, lightElevation } = saved);
       dirLight.intensity = saved.intensity;
       renderer.setSize(savedSize.x, savedSize.y, false);
       camera.aspect = savedSize.x / savedSize.y;
