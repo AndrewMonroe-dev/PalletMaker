@@ -969,22 +969,20 @@ const Grid = (() => {
     const rawY = snap(dropYIn);
     const placement = resolvePlacement(footprintW, footprintD, rawX, rawY, null);
 
-    let x, y, w, d, valid;
+    // A target that's been turned draws the ghost turned with it (angle, about the ghost's center).
+    let x, y, w, d, valid, angle = 0;
     if (placement && placement.mode === 'base') {
       // Merging into an existing base column -- highlight the whole target it'll absorb into.
       ({ x, y, footprintW: w, footprintD: d } = placement.targetStack);
+      angle = placement.targetStack.angle || 0;
       valid = true;
     } else if (placement && placement.mode === 'merge-topper') {
-      x = placement.targetStack.x + placement.topper.dx;
-      y = placement.targetStack.y + placement.topper.dy;
-      w = placement.topper.footprintW;
-      d = placement.topper.footprintD;
+      ({ x, y, w, d, angle } = stackLocalRectToWorld(placement.targetStack,
+        placement.topper.dx, placement.topper.dy, placement.topper.footprintW, placement.topper.footprintD));
       valid = true;
     } else if (placement && placement.mode === 'new-topper') {
-      x = placement.targetStack.x + placement.localX;
-      y = placement.targetStack.y + placement.localY;
-      w = footprintW;
-      d = footprintD;
+      ({ x, y, w, d, angle } = stackLocalRectToWorld(placement.targetStack,
+        placement.localX, placement.localY, footprintW, footprintD));
       valid = true;
     } else if (placement && placement.blocked) {
       x = rawX;
@@ -1011,6 +1009,7 @@ const Grid = (() => {
     dragPreviewEl.style.top = `${y * scale}px`;
     dragPreviewEl.style.width = `${w * scale}px`;
     dragPreviewEl.style.height = `${d * scale}px`;
+    dragPreviewEl.style.transform = angle ? `rotate(${angle}deg)` : '';
     dragPreviewEl.classList.toggle('invalid', !valid);
   }
 
@@ -1097,28 +1096,63 @@ const Grid = (() => {
     return (ix * iy) / area >= MERGE_OVERLAP_FRACTION;
   }
 
+  // A freely rotated stack (stack.angle) turns about its own center, and its toppers turn with it,
+  // so everything on its top surface is laid out in the stack's own un-rotated frame (origin at
+  // its top-left corner, x along its width). These two convert an axis-aligned floor rect to that
+  // frame and back, so resolvePlacement and the drag preview agree with how the stack is drawn.
+  function worldRectToStackLocal(stack, x, y, w, d) {
+    const angle = stack.angle || 0;
+    if (!angle) return { x: x - stack.x, y: y - stack.y, w, d };
+    const a = (angle * Math.PI) / 180;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    const dx = x + w / 2 - (stack.x + stack.footprintW / 2);
+    const dy = y + d / 2 - (stack.y + stack.footprintD / 2);
+    const lcx = dx * cos + dy * sin + stack.footprintW / 2;
+    const lcy = -dx * sin + dy * cos + stack.footprintD / 2;
+    return { x: lcx - w / 2, y: lcy - d / 2, w, d };
+  }
+
+  // Inverse of the above: a rect in the stack's local frame to its floor-space center-based box
+  // (x, y = top-left of the UNROTATED box, to be drawn then turned by `angle` about its center).
+  function stackLocalRectToWorld(stack, lx, ly, w, d) {
+    const angle = stack.angle || 0;
+    if (!angle) return { x: stack.x + lx, y: stack.y + ly, w, d, angle: 0 };
+    const a = (angle * Math.PI) / 180;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    const offX = lx + w / 2 - stack.footprintW / 2;
+    const offY = ly + d / 2 - stack.footprintD / 2;
+    const cx = stack.x + stack.footprintW / 2 + offX * cos - offY * sin;
+    const cy = stack.y + stack.footprintD / 2 + offX * sin + offY * cos;
+    return { x: cx - w / 2, y: cy - d / 2, w, d, angle };
+  }
+
   // Resolves what placing a footprintW x footprintD item at global (x,y) should do: merge into a
   // same-footprint target's base column, merge into (or create) a topper resting on a bigger
   // target's top surface, or (if no stackable target underlies it) return null so the caller
   // falls back to plain floor placement. excludeStackId lets a stack being dragged ignore itself.
   function resolvePlacement(footprintW, footprintD, x, y, excludeStackId) {
-    const droppedRect = { x, y, w: footprintW, d: footprintD };
-    const droppedCenter = { x: x + footprintW / 2, y: y + footprintD / 2 };
-
+    // Every test below runs in the candidate target's own frame (see worldRectToStackLocal), so a
+    // rotated target is hit where it actually is on the floor, not where its upright rect would be.
+    let droppedLocal = null;
     const targetStack = project.stacks.find(s => {
       if (s.groupId || s.id === excludeStackId) return false;
       if (!isStackable({ w: footprintW, d: footprintD }, { w: s.footprintW, d: s.footprintD })) return false;
 
+      const local = worldRectToStackLocal(s, x, y, footprintW, footprintD);
       const sameFootprint = Math.abs(s.footprintW - footprintW) < 0.01 && Math.abs(s.footprintD - footprintD) < 0.01;
+      let hit;
       if (sameFootprint) {
-        return isMergeableOverlap(droppedRect, { x: s.x, y: s.y, w: s.footprintW, d: s.footprintD });
+        hit = isMergeableOverlap(local, { x: 0, y: 0, w: s.footprintW, d: s.footprintD });
+      } else {
+        // A genuinely smaller item can't be reliably tested by area-overlap of its raw (unclamped)
+        // drop rect -- it may hang off whichever edge of the target it was dropped near. Its center
+        // landing within the target's footprint is what "aimed at this target" actually means; the
+        // final position gets clamped to fit inside afterward.
+        const cx = local.x + footprintW / 2, cy = local.y + footprintD / 2;
+        hit = cx >= 0 && cx <= s.footprintW && cy >= 0 && cy <= s.footprintD;
       }
-      // A genuinely smaller item can't be reliably tested by area-overlap of its raw (unclamped)
-      // drop rect -- it may hang off whichever edge of the target it was dropped near. Its center
-      // landing within the target's footprint is what "aimed at this target" actually means; the
-      // final position gets clamped to fit inside afterward.
-      return droppedCenter.x >= s.x && droppedCenter.x <= s.x + s.footprintW &&
-        droppedCenter.y >= s.y && droppedCenter.y <= s.y + s.footprintD;
+      if (hit) droppedLocal = local;
+      return hit;
     });
     if (!targetStack) return null;
 
@@ -1132,8 +1166,8 @@ const Grid = (() => {
       return { targetStack, mode: 'base' };
     }
 
-    let localX = clamp(snap(x - targetStack.x), 0, targetStack.footprintW - footprintW);
-    let localY = clamp(snap(y - targetStack.y), 0, targetStack.footprintD - footprintD);
+    let localX = clamp(snap(droppedLocal.x), 0, targetStack.footprintW - footprintW);
+    let localY = clamp(snap(droppedLocal.y), 0, targetStack.footprintD - footprintD);
     ({ x: localX, y: localY } = snapTopperToSiblingEdges(targetStack, localX, localY, footprintW, footprintD));
 
     const localRect = { x: localX, y: localY, w: footprintW, d: footprintD };
