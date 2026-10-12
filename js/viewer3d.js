@@ -775,9 +775,9 @@ const Viewer3D = (() => {
     return any;
   }
 
-  // The angle a stack's own boxes are turned to face. An ungrouped stack is always axis-aligned
-  // on the floor (0) unless its facing has been reversed (180); a grouped stack turns with its
-  // group AND keeps its own reversal on top of that -- grouping used to silently lose the flip.
+  // The angle a stack's own boxes are turned to face. An ungrouped stack turns by its own free
+  // angle (stack.angle) and a grouped stack by its group's, and either keeps its own reversal
+  // (180) on top of that -- grouping used to silently lose the flip.
   // Deliberately separate from the angle used to POSITION things (see addStackMeshes): a 180
   // turn about a box's own center leaves its footprint identical, so it's safe to apply to the
   // box alone without moving anything else.
@@ -829,7 +829,7 @@ const Viewer3D = (() => {
       selectedStackIds3D.forEach(id => {
         const stack = findStack(id);
         if (stack) {
-          addStackHighlight3D(stack, { x: stack.x + stack.footprintW / 2, y: stack.y + stack.footprintD / 2 }, 0, HIGHLIGHT_GOLD);
+          addStackHighlight3D(stack, { x: stack.x + stack.footprintW / 2, y: stack.y + stack.footprintD / 2 }, stack.angle || 0, HIGHLIGHT_GOLD);
         }
       });
     }
@@ -1503,7 +1503,7 @@ const Viewer3D = (() => {
     stackBoxesByStackId = {};
 
     project.stacks.filter(s => !s.groupId).forEach(stack => {
-      addStackMeshes(stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, 0);
+      addStackMeshes(stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, stack.angle || 0);
     });
 
     project.groups.forEach(group => {
@@ -2189,7 +2189,7 @@ const Viewer3D = (() => {
     exportScene.add(scaleForAr(floor));
 
     for (const stack of project.stacks.filter(s => !s.groupId)) {
-      await buildArStackMeshes(exportScene, stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, 0);
+      await buildArStackMeshes(exportScene, stack, stack.x + stack.footprintW / 2, stack.y + stack.footprintD / 2, stack.angle || 0);
     }
     for (const group of project.groups) {
       for (const { stack, worldCenter } of Grid.getGroupMembers(group)) {
