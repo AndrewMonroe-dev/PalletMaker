@@ -2151,10 +2151,12 @@ const Grid = (() => {
     const rawX = snap(stack.x);
     const rawY = snap(stack.y);
 
-    // Topper-stacking (landing on another same-footprint case) and flush edge-snapping both
-    // assume an axis-aligned rect -- a freely rotated stack's own w/d no longer describe its real
-    // screen-space footprint, so both are skipped for one (it still collides correctly against
-    // everything else, and outside-floor-bounds below, via its real rotated corners).
+    // Flush edge-snapping assumes an axis-aligned rect -- a freely rotated stack's own w/d no longer
+    // describe its real screen-space footprint, so it is skipped for one (it still collides
+    // correctly against everything else, and outside-floor-bounds below, via its real rotated
+    // corners). Landing on another case is different: a rotation turns a stack about its own
+    // center, so its center (all resolvePlacement keys off) is the same turned or not, and what
+    // lands on the target takes the target's orientation anyway.
     const isAxisAlignedAngle = (() => {
       const a = ((stack.angle || 0) % 360 + 360) % 360;
       return a <= 0.5 || a >= 359.5;
@@ -2162,7 +2164,7 @@ const Grid = (() => {
 
     // Same ordering as handleDrop: try landing on a stackable target using the raw drop point
     // before floor-level neighbor-edge-snapping can pull it off that target.
-    const placement = (isAxisAlignedAngle && stack.toppers.length === 0)
+    const placement = stack.toppers.length === 0
       ? resolvePlacement(stack.footprintW, stack.footprintD, rawX, rawY, stack.id)
       : null;
 
