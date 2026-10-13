@@ -973,15 +973,15 @@ const Grid = (() => {
     let x, y, w, d, valid, angle = 0;
     if (placement && placement.mode === 'base') {
       // Merging into an existing base column -- highlight the whole target it'll absorb into.
-      ({ x, y, footprintW: w, footprintD: d } = placement.targetStack);
-      angle = placement.targetStack.angle || 0;
+      ({ x, y, footprintW: w, footprintD: d } = placement.geom);
+      angle = placement.geom.angle || 0;
       valid = true;
     } else if (placement && placement.mode === 'merge-topper') {
-      ({ x, y, w, d, angle } = stackLocalRectToWorld(placement.targetStack,
+      ({ x, y, w, d, angle } = stackLocalRectToWorld(placement.geom,
         placement.topper.dx, placement.topper.dy, placement.topper.footprintW, placement.topper.footprintD));
       valid = true;
     } else if (placement && placement.mode === 'new-topper') {
-      ({ x, y, w, d, angle } = stackLocalRectToWorld(placement.targetStack,
+      ({ x, y, w, d, angle } = stackLocalRectToWorld(placement.geom,
         placement.localX, placement.localY, footprintW, footprintD));
       valid = true;
     } else if (placement && placement.blocked) {
@@ -1133,12 +1133,27 @@ const Grid = (() => {
   function resolvePlacement(footprintW, footprintD, x, y, excludeStackId) {
     // Every test below runs in the candidate target's own frame (see worldRectToStackLocal), so a
     // rotated target is hit where it actually is on the floor, not where its upright rect would be.
+    // A case inside a group sits where its group puts it and turns with the group's angle (its
+    // own stack.angle is flattened to 0 when grouped), so it gets a floor geometry derived from the
+    // group instead of its own x/y/angle. Mutations (items, toppers) still go to the real stack.
+    const groupedGeom = {};
+    project.groups.forEach(g => {
+      getGroupMembers(g).forEach(({ stack, worldCenter }) => {
+        groupedGeom[stack.id] = {
+          x: worldCenter.x - stack.footprintW / 2, y: worldCenter.y - stack.footprintD / 2,
+          footprintW: stack.footprintW, footprintD: stack.footprintD, angle: g.angle
+        };
+      });
+    });
+    const geomOf = s => groupedGeom[s.id] || s;
+
     let droppedLocal = null;
     const targetStack = project.stacks.find(s => {
-      if (s.groupId || s.id === excludeStackId) return false;
+      if (s.id === excludeStackId) return false;
+      if (s.groupId && !groupedGeom[s.id]) return false;
       if (!isStackable({ w: footprintW, d: footprintD }, { w: s.footprintW, d: s.footprintD })) return false;
 
-      const local = worldRectToStackLocal(s, x, y, footprintW, footprintD);
+      const local = worldRectToStackLocal(geomOf(s), x, y, footprintW, footprintD);
       const sameFootprint = Math.abs(s.footprintW - footprintW) < 0.01 && Math.abs(s.footprintD - footprintD) < 0.01;
       let hit;
       if (sameFootprint) {
@@ -1163,7 +1178,7 @@ const Grid = (() => {
       if (targetStack.toppers.length > 0) {
         return { blocked: true, reason: 'That stack already has units placed on top of it -- remove them first, or drop somewhere else.' };
       }
-      return { targetStack, mode: 'base' };
+      return { targetStack, mode: 'base', geom: geomOf(targetStack) };
     }
 
     let localX = clamp(snap(droppedLocal.x), 0, targetStack.footprintW - footprintW);
@@ -1176,7 +1191,7 @@ const Grid = (() => {
       Math.abs(t.footprintW - footprintW) < 0.01 && Math.abs(t.footprintD - footprintD) < 0.01 &&
       isMergeableOverlap(localRect, { x: t.dx, y: t.dy, w: t.footprintW, d: t.footprintD })
     );
-    if (existingTopper) return { targetStack, mode: 'merge-topper', topper: existingTopper };
+    if (existingTopper) return { targetStack, mode: 'merge-topper', topper: existingTopper, geom: geomOf(targetStack) };
 
     const collidesTopper = targetStack.toppers.some(t =>
       rectsOverlap(localRect, { x: t.dx, y: t.dy, w: t.footprintW, d: t.footprintD })
@@ -1185,7 +1200,7 @@ const Grid = (() => {
       return { blocked: true, reason: 'That overlaps a unit already placed on top of this stack.' };
     }
 
-    return { targetStack, mode: 'new-topper', localX, localY };
+    return { targetStack, mode: 'new-topper', localX, localY, geom: geomOf(targetStack) };
   }
 
   // Local-coordinate version of snapToNeighborEdges, scoped to one stack's top surface: snaps a
