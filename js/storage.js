@@ -87,7 +87,11 @@ function readFileAsDataUrl(file) {
 // pages, small thumbnails). Transparent PNGs get a white backing fill first since JPEG has no alpha
 // channel -- an acceptable trade-off for product photography, which is rarely transparent to begin
 // with. Runs once at upload time, not on every render, so it's a one-time cost per photo.
-function downscaleImageDataUrl(dataUrl, maxDim = 1000, quality = 0.85) {
+//
+// keepAlpha (image panels only): if the picture really has transparent pixels, skip the white
+// backing and store a PNG instead so the panel keeps its see-through areas. Opaque pictures still
+// take the small JPEG path.
+function downscaleImageDataUrl(dataUrl, maxDim = 1000, quality = 0.85, keepAlpha = false) {
   return new Promise((resolve) => {
     if (!dataUrl) { resolve(null); return; }
     const img = new Image();
@@ -100,6 +104,16 @@ function downscaleImageDataUrl(dataUrl, maxDim = 1000, quality = 0.85) {
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext('2d');
+        if (keepAlpha) {
+          ctx.drawImage(img, 0, 0, w, h);
+          const px = ctx.getImageData(0, 0, w, h).data;
+          let hasAlpha = false;
+          for (let i = 3; i < px.length; i += 4) {
+            if (px[i] < 255) { hasAlpha = true; break; }
+          }
+          if (hasAlpha) { resolve(canvas.toDataURL('image/png')); return; }
+          ctx.clearRect(0, 0, w, h);
+        }
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);

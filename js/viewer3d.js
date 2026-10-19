@@ -1858,7 +1858,7 @@ const Viewer3D = (() => {
       // remaining upload path that kept a full-resolution original, and every one of those
       // rode along inside every project save and (until snapshotProject was fixed) every undo
       // snapshot the grid took.
-      const dataUrl = await downscaleImageDataUrl(evt.target.result);
+      const dataUrl = await downscaleImageDataUrl(evt.target.result, 1000, 0.85, true);
       const panel = {
         id: uid('panel'),
         dataUrl,
@@ -2159,7 +2159,7 @@ const Viewer3D = (() => {
   }
 
   async function buildArImagePanel(panel) {
-    const mat = new THREE_AR.MeshStandardMaterial({ color: 0xffffff, side: THREE_AR.DoubleSide });
+    const mat = new THREE_AR.MeshStandardMaterial({ color: 0xffffff, side: THREE_AR.DoubleSide, transparent: true });
     const tex = await loadArTexture(panel.dataUrl);
     if (tex) {
       // Same UV-mirror trick as the live Flip Horizontal/Vertical panel controls.
