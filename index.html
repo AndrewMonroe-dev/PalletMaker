@@ -5,9 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PalletMaker</title>
 <link rel="stylesheet" href="css/style.css">
+<script>
+  // Skip the launch intro after the first load in a tab and when the device asks for reduced motion.
+  try {
+    if (sessionStorage.getItem('pm-splash-seen') || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      document.documentElement.classList.add('no-splash');
+    }
+  } catch (e) { /* storage blocked: the intro just plays */ }
+</script>
 </head>
 <body>
+<div class="splash" id="splash" aria-hidden="true">
+  <div class="logo-stage" id="logo-stage"></div>
+</div>
 <header class="app-header">
+  <span class="header-logo" id="header-logo" aria-hidden="true"></span>
   <h1>PalletMaker</h1>
   <nav class="tabs">
     <button class="tab-btn active" data-tab="itemTypes">Item Types</button>
@@ -425,6 +437,10 @@
   </section>
 </main>
 
+<!-- Launch intro first, so it starts before the CDN scripts below are fetched. -->
+<script src="vendor/lottie_light.min.js"></script>
+<script src="js/introAnimation.js"></script>
+<script src="js/splash.js"></script>
 <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
 <!-- AR export deliberately uses its OWN, much newer three.js (0.160.0) loaded as ES modules under
      the "three" bare specifier, entirely separate from the r0.128 UMD build above that the live

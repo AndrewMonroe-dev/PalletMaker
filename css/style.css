@@ -734,3 +734,23 @@ select {
   margin-bottom: 6px;
 }
 .ar-modal-header h3 { margin: 0; }
+
+/* Launch intro: the pallet-stacking animation plays centered, then the finished stack
+   flies into the header and rests left of the title (see js/splash.js). */
+.logo-stage { aspect-ratio: 540 / 520; width: 100%; }
+.logo-stage svg { display: block; width: 100%; height: 100%; }
+.header-logo { flex: none; width: 34px; margin: -4px -10px -4px 0; }
+/* Hidden until the flight lands on it. The animation reveals it anyway if the script never runs. */
+html:not(.no-splash):not(.logo-ready) .header-logo { visibility: hidden; animation: pm-reveal 0s 6s forwards; }
+
+.splash {
+  position: fixed; inset: 0; z-index: 5000; display: grid; place-items: center;
+  background: var(--bg); pointer-events: none; transition: background-color .45s ease .2s;
+  animation: pm-splash-out .3s 6s forwards; /* failsafe if the script never runs */
+}
+.splash.flying { background-color: transparent; }
+.no-splash .splash { display: none; }
+.splash .logo-stage { width: min(70vw, 340px); transition: transform .7s cubic-bezier(.5, 0, .2, 1); transform-origin: center; }
+@keyframes pm-reveal { to { visibility: visible; } }
+@keyframes pm-splash-out { to { opacity: 0; visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .splash { display: none; } }
